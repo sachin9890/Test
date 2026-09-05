@@ -1,0 +1,8 @@
+node_modules/
+.env
+*.log
+
+# Runtime data: the target project clone and its per-session worktrees.
+# These are not part of this app's source.
+/repo/
+/worktrees/

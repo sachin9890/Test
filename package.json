@@ -1,0 +1,21 @@
+{
+  "name": "opencode-remote",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Express API around OpenCode for remote AI-assisted coding on isolated git worktrees",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "^1.18.29",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "opencode-ai": "^1.18.29"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
