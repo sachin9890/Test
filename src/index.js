@@ -6,6 +6,9 @@ import * as git from "./git.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { getClient, startOpencode, stopOpencode } from "./opencode.js";
+import * as projects from "./projects.js";
+import { metaRouter } from "./routes/meta.js";
+import { projectsRouter } from "./routes/projects.js";
 import { sessionsRouter } from "./routes/sessions.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -17,7 +20,8 @@ async function main() {
     process.exit(1);
   }
 
-  await git.ensureRepoReady();
+  await git.ensureWorktreesDir();
+  await projects.loadProjects();
 
   const opencodeServer = await startOpencode();
   getClient(); // fail fast if the client didn't initialize
@@ -27,6 +31,8 @@ async function main() {
   app.use(express.json());
 
   app.get("/health", (req, res) => res.json({ status: "ok" }));
+  app.use("/api/projects", authMiddleware, projectsRouter);
+  app.use("/api/meta", authMiddleware, metaRouter);
   app.use("/api/sessions", authMiddleware, sessionsRouter);
   app.use(express.static(publicDir));
   app.use(errorHandler);

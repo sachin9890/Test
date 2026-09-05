@@ -132,7 +132,7 @@ main {
   height: calc(100vh - 49px);
 }
 
-.sessions-panel {
+.sidebar {
   width: 320px;
   flex-shrink: 0;
   border-right: 1px solid var(--border);
@@ -141,16 +141,93 @@ main {
   overflow: hidden;
 }
 
-.sessions-panel .panel-head {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
+.sidebar-section {
   display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border);
+  min-height: 0;
+}
+
+.sidebar-section.sessions-section {
+  flex: 1;
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
   gap: 8px;
 }
 
-.sessions-panel .panel-head input {
+.sidebar-head h3 {
+  margin: 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+button.small {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.projects-list {
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.project-item {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-item .info {
   flex: 1;
   min-width: 0;
+}
+
+.project-item .name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-item .repo {
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--border);
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.icon-btn {
+  border: none;
+  background: none;
+  padding: 2px 6px;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.icon-btn:hover {
+  color: var(--danger);
+  border: none;
 }
 
 .sessions-list {
@@ -330,4 +407,127 @@ pre.code-view {
   color: var(--muted);
   font-size: 12px;
   padding: 0 12px 10px;
+}
+
+/* Modal */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal-overlay[hidden] {
+  display: none;
+}
+
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-head h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.modal-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+}
+
+.field .field-hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* Console tab */
+
+.console-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  background: var(--code-bg);
+  color: var(--code-text);
+  font-family: ui-monospace, monospace;
+  font-size: 12.5px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.console-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  display: flex;
+  gap: 8px;
+}
+
+.console-line .icon {
+  flex-shrink: 0;
+}
+
+.console-line.tool {
+  color: #7dd3fc;
+}
+
+.console-line.file {
+  color: #86efac;
+}
+
+.console-line.text {
+  color: var(--code-text);
+}
+
+.console-line.error {
+  color: #fca5a5;
+}
+
+.console-line.status {
+  color: #9aa1ac;
+  font-style: italic;
 }

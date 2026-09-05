@@ -2,7 +2,8 @@ node_modules/
 .env
 *.log
 
-# Runtime data: the target project clone and its per-session worktrees.
-# These are not part of this app's source.
-/repo/
+# Runtime data: cloned projects, their per-session worktrees, and persisted
+# project metadata (including PATs). None of this is part of this app's source.
+/projects/
 /worktrees/
+/data/

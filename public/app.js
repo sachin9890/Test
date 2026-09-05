@@ -1,8 +1,10 @@
 const state = {
   token: localStorage.getItem("apiToken") || "",
   sessions: [],
+  projects: [],
   selectedId: null,
   tab: "messages",
+  eventSource: null,
 };
 
 const els = {
@@ -10,11 +12,15 @@ const els = {
   banner: document.getElementById("banner"),
   tokenInput: document.getElementById("token-input"),
   tokenSave: document.getElementById("token-save"),
-  newTitle: document.getElementById("new-title"),
+  addProjectBtn: document.getElementById("add-project"),
+  projectsList: document.getElementById("projects-list"),
   newSessionBtn: document.getElementById("new-session"),
-  refreshBtn: document.getElementById("refresh-sessions"),
   sessionsList: document.getElementById("sessions-list"),
   detailPanel: document.getElementById("detail-panel"),
+  modalOverlay: document.getElementById("modal-overlay"),
+  modalTitle: document.getElementById("modal-title"),
+  modalBody: document.getElementById("modal-body"),
+  modalClose: document.getElementById("modal-close"),
 };
 
 els.tokenInput.value = state.token;
@@ -54,6 +60,30 @@ function shortId(id) {
   return id.slice(0, 8);
 }
 
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
+// ---------- Modal ----------
+
+function openModal(title, bodyHtml) {
+  els.modalTitle.textContent = title;
+  els.modalBody.innerHTML = bodyHtml;
+  els.modalOverlay.hidden = false;
+}
+
+function closeModal() {
+  els.modalOverlay.hidden = true;
+  els.modalBody.innerHTML = "";
+}
+
+els.modalClose.addEventListener("click", closeModal);
+els.modalOverlay.addEventListener("click", (e) => {
+  if (e.target === els.modalOverlay) closeModal();
+});
+
+// ---------- Health ----------
+
 async function checkHealth() {
   try {
     const res = await fetch("/health");
@@ -62,6 +92,134 @@ async function checkHealth() {
     els.statusDot.className = "status-dot bad";
   }
 }
+
+// ---------- Projects ----------
+
+async function refreshProjects() {
+  try {
+    state.projects = await api("/api/projects");
+    renderProjects();
+  } catch (err) {
+    showBanner(err.message);
+  }
+}
+
+function renderProjects() {
+  els.projectsList.innerHTML = "";
+  if (state.projects.length === 0) {
+    els.projectsList.innerHTML = '<div class="hint">No projects yet — add one to start a session.</div>';
+    return;
+  }
+  for (const p of state.projects) {
+    const item = document.createElement("div");
+    item.className = "project-item";
+    item.innerHTML = `
+      <div class="info">
+        <div class="name">${escapeHtml(p.name)}</div>
+        <div class="repo" title="${escapeHtml(p.repoUrl)}">${escapeHtml(p.repoUrl)}${p.branch ? " @ " + escapeHtml(p.branch) : ""}</div>
+      </div>
+      ${p.hasToken ? '<span class="badge">PAT</span>' : ""}
+      <button class="icon-btn" data-delete-project="${p.id}" title="Delete project">&times;</button>
+    `;
+    els.projectsList.appendChild(item);
+  }
+
+  for (const btn of els.projectsList.querySelectorAll("[data-delete-project]")) {
+    btn.addEventListener("click", () => deleteProject(btn.dataset.deleteProject));
+  }
+}
+
+async function deleteProject(id) {
+  if (!confirm("Delete this project? Its cloned repo will be removed from disk.")) return;
+  try {
+    await api(`/api/projects/${id}`, { method: "DELETE" });
+    await refreshProjects();
+  } catch (err) {
+    showBanner(err.message);
+  }
+}
+
+function openAddProjectModal() {
+  openModal(
+    "Add project",
+    `
+    <div class="field">
+      <label for="project-name">Name</label>
+      <input id="project-name" type="text" placeholder="My project" />
+    </div>
+    <div class="field">
+      <label for="project-repo">Repository URL</label>
+      <input id="project-repo" type="text" placeholder="https://github.com/org/repo.git" />
+    </div>
+    <div class="field">
+      <label for="project-branch">Branch (optional)</label>
+      <input id="project-branch" type="text" placeholder="main" />
+    </div>
+    <div class="field">
+      <label for="project-pat">GitHub Personal Access Token (optional, for private repos)</label>
+      <input id="project-pat" type="password" placeholder="ghp_..." autocomplete="off" />
+      <div class="field-hint">Stored on the server only, never shown again after saving.</div>
+    </div>
+    <div class="modal-actions">
+      <button id="cancel-add-project">Cancel</button>
+      <button id="submit-add-project" class="primary">Clone &amp; add</button>
+    </div>
+  `,
+  );
+
+  document.getElementById("cancel-add-project").addEventListener("click", closeModal);
+  document.getElementById("submit-add-project").addEventListener("click", async () => {
+    const name = document.getElementById("project-name").value.trim();
+    const repoUrl = document.getElementById("project-repo").value.trim();
+    const branch = document.getElementById("project-branch").value.trim();
+    const pat = document.getElementById("project-pat").value.trim();
+
+    if (!name || !repoUrl) {
+      showBanner('"Name" and "Repository URL" are required.');
+      return;
+    }
+
+    const submitBtn = document.getElementById("submit-add-project");
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Cloning…";
+    try {
+      await api("/api/projects", {
+        method: "POST",
+        body: { name, repoUrl, branch: branch || undefined, pat: pat || undefined },
+      });
+      closeModal();
+      await refreshProjects();
+    } catch (err) {
+      showBanner(err.message);
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Clone & add";
+    }
+  });
+}
+
+els.addProjectBtn.addEventListener("click", openAddProjectModal);
+
+// ---------- Metadata (agents / models) ----------
+
+async function fetchAgents() {
+  try {
+    return await api("/api/meta/agents");
+  } catch (err) {
+    showBanner(err.message);
+    return [];
+  }
+}
+
+async function fetchProviders() {
+  try {
+    return await api("/api/meta/providers");
+  } catch (err) {
+    showBanner(err.message);
+    return [];
+  }
+}
+
+// ---------- Sessions ----------
 
 async function refreshSessions() {
   try {
@@ -81,13 +239,98 @@ function renderSessions() {
   for (const s of state.sessions) {
     const item = document.createElement("div");
     item.className = "session-item" + (s.id === state.selectedId ? " active" : "");
-    item.innerHTML = `<div class="title">${shortId(s.id)}</div><div class="branch">${s.branch}</div>`;
+    item.innerHTML = `<div class="title">${escapeHtml(s.title || shortId(s.id))}</div><div class="branch">${escapeHtml(s.projectName || "")} · ${escapeHtml(s.branch)}</div>`;
     item.addEventListener("click", () => selectSession(s.id));
     els.sessionsList.appendChild(item);
   }
 }
 
+async function openNewSessionModal() {
+  if (state.projects.length === 0) {
+    showBanner("Add a project first.");
+    return;
+  }
+
+  openModal("New session", '<div class="hint">Loading models and agents…</div>');
+  const [agents, providers] = await Promise.all([fetchAgents(), fetchProviders()]);
+
+  const projectOptions = state.projects.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
+  const agentOptions = agents
+    .map((a) => `<option value="${escapeHtml(a.name)}" title="${escapeHtml(a.description || "")}">${escapeHtml(a.name)}</option>`)
+    .join("");
+  const modelOptions = providers
+    .map(
+      (p) =>
+        `<optgroup label="${escapeHtml(p.name)}">` +
+        p.models.map((m) => `<option value="${p.id}::${m.id}">${escapeHtml(m.name)}</option>`).join("") +
+        "</optgroup>",
+    )
+    .join("");
+
+  openModal(
+    "New session",
+    `
+    <div class="field">
+      <label for="session-project">Project</label>
+      <select id="session-project">${projectOptions}</select>
+    </div>
+    <div class="field">
+      <label for="session-title">Title (optional)</label>
+      <input id="session-title" type="text" placeholder="Fix login bug" />
+    </div>
+    <div class="field">
+      <label for="session-agent">Agent</label>
+      <select id="session-agent"><option value="">(default)</option>${agentOptions}</select>
+    </div>
+    <div class="field">
+      <label for="session-model">Model</label>
+      <select id="session-model"><option value="">(default)</option>${modelOptions}</select>
+    </div>
+    <div class="modal-actions">
+      <button id="cancel-new-session">Cancel</button>
+      <button id="submit-new-session" class="primary">Create</button>
+    </div>
+  `,
+  );
+
+  document.getElementById("cancel-new-session").addEventListener("click", closeModal);
+  document.getElementById("submit-new-session").addEventListener("click", async () => {
+    const projectId = document.getElementById("session-project").value;
+    const title = document.getElementById("session-title").value.trim();
+    const agent = document.getElementById("session-agent").value;
+    const modelValue = document.getElementById("session-model").value;
+    const model = modelValue ? { providerID: modelValue.split("::")[0], modelID: modelValue.split("::")[1] } : undefined;
+
+    const submitBtn = document.getElementById("submit-new-session");
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Creating…";
+    try {
+      const created = await api("/api/sessions", {
+        method: "POST",
+        body: { projectId, title: title || undefined, agent: agent || undefined, model },
+      });
+      closeModal();
+      await refreshSessions();
+      selectSession(created.id);
+    } catch (err) {
+      showBanner(err.message);
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Create";
+    }
+  });
+}
+
+els.newSessionBtn.addEventListener("click", openNewSessionModal);
+
+function closeEventSource() {
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
+  }
+}
+
 function selectSession(id) {
+  closeEventSource();
   state.selectedId = id;
   state.tab = "messages";
   renderSessions();
@@ -95,6 +338,7 @@ function selectSession(id) {
 }
 
 function renderDetail() {
+  closeEventSource();
   const session = state.sessions.find((s) => s.id === state.selectedId);
   if (!session) {
     els.detailPanel.innerHTML = '<div class="empty-state">Select or create a session to get started.</div>';
@@ -103,7 +347,7 @@ function renderDetail() {
 
   els.detailPanel.innerHTML = `
     <div class="detail-head">
-      <div class="path" title="${session.path}">${session.path}</div>
+      <div class="path" title="${escapeHtml(session.path)}">${escapeHtml(session.projectName || "")} — ${escapeHtml(session.path)}</div>
       <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted)">
         <input type="checkbox" id="force-delete" /> force
       </label>
@@ -111,6 +355,7 @@ function renderDetail() {
     </div>
     <div class="tabs">
       <button class="tab-btn" data-tab="messages">Messages</button>
+      <button class="tab-btn" data-tab="console">Console</button>
       <button class="tab-btn" data-tab="status">Status</button>
       <button class="tab-btn" data-tab="diff">Diff</button>
     </div>
@@ -160,6 +405,12 @@ async function loadTab(session) {
     return;
   }
 
+  if (state.tab === "console") {
+    container.innerHTML = '<div id="console-log" class="console-log"></div>';
+    openConsole(session.id);
+    return;
+  }
+
   if (state.tab === "status") {
     container.innerHTML = '<pre class="code-view">Loading…</pre>';
     const pre = container.querySelector("pre");
@@ -184,6 +435,73 @@ async function loadTab(session) {
   }
 }
 
+// ---------- Console (live event stream) ----------
+
+function appendConsoleLine(className, icon, text) {
+  const log = document.getElementById("console-log");
+  if (!log) return;
+  const line = document.createElement("div");
+  line.className = "console-line " + className;
+  line.innerHTML = `<span class="icon">${icon}</span><span>${escapeHtml(text)}</span>`;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+function handleConsoleEvent(event) {
+  const p = event.properties || {};
+  switch (event.type) {
+    case "message.part.updated": {
+      const part = p.part;
+      if (part?.type === "tool") {
+        const status = part.state?.status;
+        const title = part.state?.title || part.tool;
+        if (status === "running") appendConsoleLine("tool", "🔧", `${part.tool} — ${title}…`);
+        else if (status === "completed") appendConsoleLine("tool", "✅", `${part.tool} — ${title}`);
+        else if (status === "error") appendConsoleLine("error", "❌", `${part.tool} failed: ${part.state?.error || ""}`);
+      } else if (part?.type === "text" && part.text) {
+        appendConsoleLine("text", "💬", part.text);
+      }
+      break;
+    }
+    case "file.edited":
+      appendConsoleLine("file", "✏️", `edited ${p.file}`);
+      break;
+    case "session.status":
+      appendConsoleLine("status", p.status?.type === "busy" ? "⏳" : "💤", `session ${p.status?.type}`);
+      break;
+    case "session.idle":
+      appendConsoleLine("status", "✔️", "session idle");
+      break;
+    case "session.error":
+      appendConsoleLine("error", "❌", p.error?.data?.message || p.error?.name || "session error");
+      break;
+    case "session.diff": {
+      const files = (p.diff || []).length;
+      if (files > 0) appendConsoleLine("file", "📝", `${files} file(s) changed`);
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+function openConsole(sessionId) {
+  const url = `/api/sessions/${sessionId}/events?token=${encodeURIComponent(state.token)}`;
+  const es = new EventSource(url);
+  state.eventSource = es;
+
+  es.onmessage = (msg) => {
+    try {
+      handleConsoleEvent(JSON.parse(msg.data));
+    } catch {
+      // ignore malformed/comment frames
+    }
+  };
+  es.onerror = () => {
+    appendConsoleLine("error", "⚠️", "Connection lost, retrying…");
+  };
+}
+
 async function loadMessages(sessionId) {
   const list = document.getElementById("messages-list");
   try {
@@ -196,7 +514,7 @@ async function loadMessages(sessionId) {
     for (const m of messages) list.appendChild(renderMessage(m));
     list.scrollTop = list.scrollHeight;
   } catch (err) {
-    list.innerHTML = `<div class="empty-state">Error: ${err.message}</div>`;
+    list.innerHTML = `<div class="empty-state">Error: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -259,26 +577,13 @@ async function sendPrompt(sessionId) {
 els.tokenSave.addEventListener("click", () => {
   state.token = els.tokenInput.value.trim();
   localStorage.setItem("apiToken", state.token);
+  refreshProjects();
   refreshSessions();
-});
-
-els.refreshBtn.addEventListener("click", refreshSessions);
-
-els.newSessionBtn.addEventListener("click", async () => {
-  els.newSessionBtn.disabled = true;
-  try {
-    const title = els.newTitle.value.trim();
-    const created = await api("/api/sessions", { method: "POST", body: title ? { title } : {} });
-    els.newTitle.value = "";
-    await refreshSessions();
-    selectSession(created.id);
-  } catch (err) {
-    showBanner(err.message);
-  } finally {
-    els.newSessionBtn.disabled = false;
-  }
 });
 
 checkHealth();
 setInterval(checkHealth, 15000);
-if (state.token) refreshSessions();
+if (state.token) {
+  refreshProjects();
+  refreshSessions();
+}

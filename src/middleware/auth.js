@@ -10,10 +10,15 @@ function safeEqual(a, b) {
 
 export function authMiddleware(req, res, next) {
   const header = req.get("authorization") || "";
-  const [scheme, token] = header.split(" ");
+  const [scheme, headerToken] = header.split(" ");
   const expected = process.env.API_TOKEN;
 
-  if (scheme !== "Bearer" || !token || !expected || !safeEqual(token, expected)) {
+  // Browsers' native EventSource can't set custom headers, so the SSE event stream
+  // route also accepts the token as a query param. Documented tradeoff: it can end up
+  // in server access logs. Every other route only accepts the Authorization header.
+  const token = scheme === "Bearer" ? headerToken : req.query.token;
+
+  if (!token || !expected || !safeEqual(String(token), expected)) {
     return next(new HttpError(401, "Missing or invalid bearer token"));
   }
 

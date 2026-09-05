@@ -19,20 +19,38 @@
     <div id="banner" class="banner" hidden></div>
 
     <main>
-      <section class="sessions-panel">
-        <div class="panel-head">
-          <input id="new-title" type="text" placeholder="Session title (optional)" />
-          <button id="new-session" class="primary">New</button>
-          <button id="refresh-sessions" title="Refresh list">⟳</button>
+      <section class="sidebar">
+        <div class="sidebar-section">
+          <div class="sidebar-head">
+            <h3>Projects</h3>
+            <button id="add-project" class="primary small">+ Add</button>
+          </div>
+          <div id="projects-list" class="projects-list"></div>
         </div>
-        <div class="hint">Each session gets its own git worktree/branch on the target repo.</div>
-        <div id="sessions-list" class="sessions-list"></div>
+
+        <div class="sidebar-section sessions-section">
+          <div class="sidebar-head">
+            <h3>Sessions</h3>
+            <button id="new-session" class="primary small">+ New</button>
+          </div>
+          <div id="sessions-list" class="sessions-list"></div>
+        </div>
       </section>
 
       <section id="detail-panel" class="detail-panel">
         <div class="empty-state">Select or create a session to get started.</div>
       </section>
     </main>
+
+    <div id="modal-overlay" class="modal-overlay" hidden>
+      <div class="modal">
+        <div class="modal-head">
+          <h2 id="modal-title"></h2>
+          <button id="modal-close" class="icon-btn" aria-label="Close">&times;</button>
+        </div>
+        <div id="modal-body" class="modal-body"></div>
+      </div>
+    </div>
 
     <script src="/app.js"></script>
   </body>
