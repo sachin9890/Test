@@ -1,10 +1,15 @@
 import "dotenv/config";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import * as git from "./git.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { getClient, startOpencode, stopOpencode } from "./opencode.js";
 import { sessionsRouter } from "./routes/sessions.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const publicDir = path.join(__dirname, "..", "public");
 
 async function main() {
   if (!process.env.API_TOKEN) {
@@ -23,6 +28,7 @@ async function main() {
 
   app.get("/health", (req, res) => res.json({ status: "ok" }));
   app.use("/api/sessions", authMiddleware, sessionsRouter);
+  app.use(express.static(publicDir));
   app.use(errorHandler);
 
   const host = process.env.HOST || "0.0.0.0";

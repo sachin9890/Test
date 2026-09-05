@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>opencode-remote</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header>
+      <span id="status-dot" class="status-dot" title="API status"></span>
+      <h1>opencode-remote</h1>
+      <div class="token-row">
+        <input id="token-input" type="password" placeholder="API_TOKEN" autocomplete="off" />
+        <button id="token-save">Save token</button>
+      </div>
+    </header>
+
+    <div id="banner" class="banner" hidden></div>
+
+    <main>
+      <section class="sessions-panel">
+        <div class="panel-head">
+          <input id="new-title" type="text" placeholder="Session title (optional)" />
+          <button id="new-session" class="primary">New</button>
+          <button id="refresh-sessions" title="Refresh list">⟳</button>
+        </div>
+        <div class="hint">Each session gets its own git worktree/branch on the target repo.</div>
+        <div id="sessions-list" class="sessions-list"></div>
+      </section>
+
+      <section id="detail-panel" class="detail-panel">
+        <div class="empty-state">Select or create a session to get started.</div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

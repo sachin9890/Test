@@ -30,6 +30,15 @@ npm start   # or: npm run dev (auto-restart on changes)
 The API listens on `HOST:PORT` (default `0.0.0.0:3000`). The embedded OpenCode server listens only on
 `OPENCODE_HOSTNAME:OPENCODE_PORT` (default `127.0.0.1:4096`) and is never exposed directly.
 
+## Web UI
+
+Open `http://<host>:<port>/` in a browser for a small management UI (served from `public/`, no build step).
+Paste your `API_TOKEN` in the top-right field and click **Save token** (it's kept in that browser's
+`localStorage`, sent only as the `Authorization` header on API calls — never persisted server-side). From
+there you can create sessions, send coding tasks and see replies in a chat view, and switch to the
+**Status**/**Diff** tabs to see exactly what OpenCode changed in that session's worktree, all without a
+terminal.
+
 ## How sessions work
 
 Every session gets its own checkout under `WORKTREES_DIR/<sessionId>`, on branch `session/<sessionId>`,
