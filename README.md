@@ -28,6 +28,10 @@ npm start   # or: npm run dev (auto-restart on changes)
 The API listens on `HOST:PORT` (default `0.0.0.0:3000`). The embedded OpenCode server listens only on
 `OPENCODE_HOSTNAME:OPENCODE_PORT` (default `127.0.0.1:4096`) and is never exposed directly.
 
+If startup fails with `Timeout waiting for server to start`, OpenCode's own boot is likely slow (e.g. a
+restricted network delaying its model-catalog refresh) — raise `OPENCODE_STARTUP_TIMEOUT_MS` in `.env`
+(default `30000`).
+
 ## Web UI
 
 Open `http://<host>:<port>/` in a browser (served from `public/`, no build step). Paste your `API_TOKEN` in
@@ -40,10 +44,15 @@ the `Authorization` header (except the live console stream, see the security not
   persona — e.g. `build` for full read/write, `plan` for read-only planning, or any custom agent the
   project's own OpenCode config defines), and a **model** from whatever providers are configured on this
   host. Both become that session's defaults for every message it sends.
-- **Messages** — chat with the session; it reads and edits real files in its worktree.
-- **Console** — a live, streaming view of what OpenCode is actually doing right now: tool calls as they
-  start/finish (`write`, `edit`, `bash`, …), files as they're edited, and session status/errors — powered by
-  OpenCode's own event stream, scoped to that session.
+- **Task** — the main tab, a 4-step workflow instead of open-ended chat:
+  1. **Describe** what you want done, in plain English.
+  2. OpenCode proposes a **plan** using its read-only `plan` agent — nothing is touched yet.
+  3. **Accept & implement** or **Reject**. Accepting re-runs the same request through a write-capable agent
+     (the session's own agent, or `build` if the session's default is itself `plan`) and switches to a live,
+     streaming view of what's actually happening — tool calls, file edits, status — while it works.
+  4. **Done** — see the result, jump to **Diff**, or start another task on the same session.
+- **Console** — the same live event stream as a standalone tab, so you can watch a session's activity at any
+  time, not just right after accepting a plan.
 - **Status** / **Diff** — the session worktree's real `git status` / `git diff`.
 
 ## How it works

@@ -3,8 +3,9 @@ const state = {
   sessions: [],
   projects: [],
   selectedId: null,
-  tab: "messages",
+  tab: "task",
   eventSource: null,
+  taskFlows: new Map(), // sessionId -> { step, taskText, planText, resultText, resultError }
 };
 
 const els = {
@@ -332,7 +333,7 @@ function closeEventSource() {
 function selectSession(id) {
   closeEventSource();
   state.selectedId = id;
-  state.tab = "messages";
+  state.tab = "task";
   renderSessions();
   renderDetail();
 }
@@ -354,7 +355,7 @@ function renderDetail() {
       <button id="delete-session" class="danger">Delete</button>
     </div>
     <div class="tabs">
-      <button class="tab-btn" data-tab="messages">Messages</button>
+      <button class="tab-btn" data-tab="task">Task</button>
       <button class="tab-btn" data-tab="console">Console</button>
       <button class="tab-btn" data-tab="status">Status</button>
       <button class="tab-btn" data-tab="diff">Diff</button>
@@ -375,6 +376,7 @@ function renderDetail() {
     const force = document.getElementById("force-delete").checked;
     try {
       await api(`/api/sessions/${session.id}${force ? "?force=true" : ""}`, { method: "DELETE" });
+      state.taskFlows.delete(session.id);
       state.selectedId = null;
       await refreshSessions();
       renderDetail();
@@ -389,25 +391,14 @@ function renderDetail() {
 async function loadTab(session) {
   const container = document.getElementById("tab-content");
 
-  if (state.tab === "messages") {
-    container.innerHTML = `
-      <div id="messages-list" class="messages-list"><div class="empty-state">Loading…</div></div>
-      <div class="composer">
-        <textarea id="prompt-input" placeholder="Ask OpenCode to do something… (Cmd/Ctrl+Enter to send)"></textarea>
-        <button id="send-prompt" class="primary">Send</button>
-      </div>
-    `;
-    document.getElementById("send-prompt").addEventListener("click", () => sendPrompt(session.id));
-    document.getElementById("prompt-input").addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) sendPrompt(session.id);
-    });
-    await loadMessages(session.id);
+  if (state.tab === "task") {
+    renderTaskTab(session);
     return;
   }
 
   if (state.tab === "console") {
     container.innerHTML = '<div id="console-log" class="console-log"></div>';
-    openConsole(session.id);
+    openConsole(session.id, "console-log");
     return;
   }
 
@@ -437,8 +428,8 @@ async function loadTab(session) {
 
 // ---------- Console (live event stream) ----------
 
-function appendConsoleLine(className, icon, text) {
-  const log = document.getElementById("console-log");
+function appendConsoleLine(containerId, className, icon, text) {
+  const log = document.getElementById(containerId);
   if (!log) return;
   const line = document.createElement("div");
   line.className = "console-line " + className;
@@ -447,7 +438,7 @@ function appendConsoleLine(className, icon, text) {
   log.scrollTop = log.scrollHeight;
 }
 
-function handleConsoleEvent(event) {
+function handleConsoleEvent(containerId, event) {
   const p = event.properties || {};
   switch (event.type) {
     case "message.part.updated": {
@@ -455,29 +446,30 @@ function handleConsoleEvent(event) {
       if (part?.type === "tool") {
         const status = part.state?.status;
         const title = part.state?.title || part.tool;
-        if (status === "running") appendConsoleLine("tool", "🔧", `${part.tool} — ${title}…`);
-        else if (status === "completed") appendConsoleLine("tool", "✅", `${part.tool} — ${title}`);
-        else if (status === "error") appendConsoleLine("error", "❌", `${part.tool} failed: ${part.state?.error || ""}`);
+        if (status === "running") appendConsoleLine(containerId, "tool", "🔧", `${part.tool} — ${title}…`);
+        else if (status === "completed") appendConsoleLine(containerId, "tool", "✅", `${part.tool} — ${title}`);
+        else if (status === "error")
+          appendConsoleLine(containerId, "error", "❌", `${part.tool} failed: ${part.state?.error || ""}`);
       } else if (part?.type === "text" && part.text) {
-        appendConsoleLine("text", "💬", part.text);
+        appendConsoleLine(containerId, "text", "💬", part.text);
       }
       break;
     }
     case "file.edited":
-      appendConsoleLine("file", "✏️", `edited ${p.file}`);
+      appendConsoleLine(containerId, "file", "✏️", `edited ${p.file}`);
       break;
     case "session.status":
-      appendConsoleLine("status", p.status?.type === "busy" ? "⏳" : "💤", `session ${p.status?.type}`);
+      appendConsoleLine(containerId, "status", p.status?.type === "busy" ? "⏳" : "💤", `session ${p.status?.type}`);
       break;
     case "session.idle":
-      appendConsoleLine("status", "✔️", "session idle");
+      appendConsoleLine(containerId, "status", "✔️", "session idle");
       break;
     case "session.error":
-      appendConsoleLine("error", "❌", p.error?.data?.message || p.error?.name || "session error");
+      appendConsoleLine(containerId, "error", "❌", p.error?.data?.message || p.error?.name || "session error");
       break;
     case "session.diff": {
       const files = (p.diff || []).length;
-      if (files > 0) appendConsoleLine("file", "📝", `${files} file(s) changed`);
+      if (files > 0) appendConsoleLine(containerId, "file", "📝", `${files} file(s) changed`);
       break;
     }
     default:
@@ -485,93 +477,274 @@ function handleConsoleEvent(event) {
   }
 }
 
-function openConsole(sessionId) {
+function openConsole(sessionId, containerId) {
   const url = `/api/sessions/${sessionId}/events?token=${encodeURIComponent(state.token)}`;
   const es = new EventSource(url);
   state.eventSource = es;
 
   es.onmessage = (msg) => {
     try {
-      handleConsoleEvent(JSON.parse(msg.data));
+      handleConsoleEvent(containerId, JSON.parse(msg.data));
     } catch {
       // ignore malformed/comment frames
     }
   };
   es.onerror = () => {
-    appendConsoleLine("error", "⚠️", "Connection lost, retrying…");
+    appendConsoleLine(containerId, "error", "⚠️", "Connection lost, retrying…");
   };
 }
 
-async function loadMessages(sessionId) {
-  const list = document.getElementById("messages-list");
-  try {
-    const messages = await api(`/api/sessions/${sessionId}/messages`);
-    list.innerHTML = "";
-    if (messages.length === 0) {
-      list.innerHTML = '<div class="empty-state">No messages yet — send one below.</div>';
-      return;
+// ---------- Task workflow: describe -> plan -> accept/reject -> implement ----------
+
+function getTaskFlow(sessionId) {
+  if (!state.taskFlows.has(sessionId)) {
+    state.taskFlows.set(sessionId, { step: "input", taskText: "", planText: "", resultText: "", resultError: null });
+  }
+  return state.taskFlows.get(sessionId);
+}
+
+const TASK_STEPS = [
+  { key: "input", label: "1 · Describe" },
+  { key: "plan", label: "2 · Review plan" },
+  { key: "implementing", label: "3 · Implement" },
+  { key: "done", label: "4 · Done" },
+];
+
+function renderStepIndicator(step) {
+  const normalized = step === "planning" ? "input-done" : step;
+  const currentIndex = normalized === "input-done" ? 0 : TASK_STEPS.findIndex((s) => s.key === normalized);
+  return `<div class="step-indicator">${TASK_STEPS.map((s, i) => {
+    const cls = i === currentIndex && normalized !== "input-done" ? "current" : i <= currentIndex ? "done" : "";
+    return `<div class="step ${cls}"><span class="step-dot"></span>${s.label}</div>`;
+  }).join("")}</div>`;
+}
+
+function inlineFormat(s) {
+  return s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, "$1<em>$2</em>");
+}
+
+// Minimal markdown-ish renderer for OpenCode's plan/reply text: headings, lists, code
+// fences, bold/italic/inline-code. Input is already HTML-escaped before this runs.
+function renderMarkdownLite(text) {
+  const lines = escapeHtml(text || "").split("\n");
+  let html = "";
+  let listType = null;
+  let inCode = false;
+  let codeBuf = [];
+
+  const closeList = () => {
+    if (listType) {
+      html += `</${listType}>`;
+      listType = null;
     }
-    for (const m of messages) list.appendChild(renderMessage(m));
-    list.scrollTop = list.scrollHeight;
-  } catch (err) {
-    list.innerHTML = `<div class="empty-state">Error: ${escapeHtml(err.message)}</div>`;
+  };
+
+  for (const line of lines) {
+    if (line.trim().startsWith("```")) {
+      if (inCode) {
+        html += `<pre class="plan-code"><code>${codeBuf.join("\n")}</code></pre>`;
+        codeBuf = [];
+        inCode = false;
+      } else {
+        closeList();
+        inCode = true;
+      }
+      continue;
+    }
+    if (inCode) {
+      codeBuf.push(line);
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      closeList();
+      html += `<div class="plan-heading">${inlineFormat(heading[2])}</div>`;
+      continue;
+    }
+
+    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
+    if (bullet) {
+      if (listType !== "ul") {
+        closeList();
+        html += "<ul>";
+        listType = "ul";
+      }
+      html += `<li>${inlineFormat(bullet[1])}</li>`;
+      continue;
+    }
+
+    const numbered = line.match(/^\s*\d+\.\s+(.*)$/);
+    if (numbered) {
+      if (listType !== "ol") {
+        closeList();
+        html += "<ol>";
+        listType = "ol";
+      }
+      html += `<li>${inlineFormat(numbered[1])}</li>`;
+      continue;
+    }
+
+    if (line.trim() === "") {
+      closeList();
+      continue;
+    }
+
+    closeList();
+    html += `<p>${inlineFormat(line)}</p>`;
+  }
+  closeList();
+  if (inCode && codeBuf.length) html += `<pre class="plan-code"><code>${codeBuf.join("\n")}</code></pre>`;
+  return html || "<p><em>(empty)</em></p>";
+}
+
+function renderTaskTab(session) {
+  const container = document.getElementById("tab-content");
+  const flow = getTaskFlow(session.id);
+
+  container.innerHTML = `<div class="task-flow">${renderStepIndicator(flow.step)}<div id="task-step-body"></div></div>`;
+  const body = document.getElementById("task-step-body");
+
+  if (flow.step === "input") {
+    body.innerHTML = `
+      <div class="task-card">
+        <h3>What do you want done?</h3>
+        <p class="hint">OpenCode proposes a read-only plan first — nothing changes until you accept it.</p>
+        <textarea id="task-input" rows="5" placeholder="e.g. Add input validation to the signup form and cover it with tests">${escapeHtml(flow.taskText)}</textarea>
+        <div class="task-actions">
+          <button id="generate-plan-btn" class="primary">Generate plan →</button>
+        </div>
+      </div>
+    `;
+    document.getElementById("generate-plan-btn").addEventListener("click", () => {
+      const text = document.getElementById("task-input").value.trim();
+      if (!text) {
+        showBanner("Describe what you want done first.");
+        return;
+      }
+      flow.taskText = text;
+      generatePlan(session, flow);
+    });
+    return;
+  }
+
+  if (flow.step === "planning") {
+    body.innerHTML = `
+      <div class="task-card task-loading">
+        <div class="spinner"></div>
+        <p>Thinking through a plan…</p>
+        <p class="hint">“${escapeHtml(flow.taskText)}”</p>
+      </div>
+    `;
+    return;
+  }
+
+  if (flow.step === "plan") {
+    body.innerHTML = `
+      <div class="task-card">
+        <h3>Proposed plan</h3>
+        <div class="plan-content">${renderMarkdownLite(flow.planText)}</div>
+        <div class="task-actions">
+          <button id="reject-plan-btn" class="danger">✕ Reject</button>
+          <button id="accept-plan-btn" class="primary">✓ Accept &amp; implement</button>
+        </div>
+      </div>
+    `;
+    document.getElementById("reject-plan-btn").addEventListener("click", () => {
+      flow.step = "input";
+      renderTaskTab(session);
+    });
+    document.getElementById("accept-plan-btn").addEventListener("click", () => implementPlan(session, flow));
+    return;
+  }
+
+  if (flow.step === "implementing") {
+    body.innerHTML = `
+      <div class="task-card task-loading">
+        <div class="spinner"></div>
+        <p>Implementing the plan…</p>
+      </div>
+      <div id="task-console-log" class="console-log embedded"></div>
+    `;
+    openConsole(session.id, "task-console-log");
+    return;
+  }
+
+  if (flow.step === "done") {
+    body.innerHTML = `
+      <div class="task-card">
+        <h3>${flow.resultError ? "⚠️ Finished with an error" : "✅ Done"}</h3>
+        <div class="plan-content">${renderMarkdownLite(flow.resultError || flow.resultText)}</div>
+        <div class="task-actions">
+          <button id="view-diff-btn">View diff</button>
+          <button id="new-task-btn" class="primary">Start another task</button>
+        </div>
+      </div>
+    `;
+    document.getElementById("view-diff-btn").addEventListener("click", () => {
+      state.tab = "diff";
+      renderDetail();
+    });
+    document.getElementById("new-task-btn").addEventListener("click", () => {
+      state.taskFlows.set(session.id, { step: "input", taskText: "", planText: "", resultText: "", resultError: null });
+      renderTaskTab(session);
+    });
   }
 }
 
-function renderMessage(m) {
-  const div = document.createElement("div");
-  const text = (m.parts || [])
-    .filter((p) => p.type === "text")
-    .map((p) => p.text)
-    .join("\n");
-
-  if (m.info.role === "assistant" && m.info.error) {
-    div.className = "message error";
-    div.textContent = m.info.error.data?.message || m.info.error.name || "Error";
-  } else {
-    div.className = "message " + m.info.role;
-    div.textContent = text || "(no text content)";
-  }
-  return div;
-}
-
-async function sendPrompt(sessionId) {
-  const input = document.getElementById("prompt-input");
-  const text = input.value.trim();
-  if (!text) return;
-
-  const sendBtn = document.getElementById("send-prompt");
-  const list = document.getElementById("messages-list");
-  sendBtn.disabled = true;
-  input.disabled = true;
-
-  if (list.querySelector(".empty-state")) list.innerHTML = "";
-  const userBubble = document.createElement("div");
-  userBubble.className = "message user";
-  userBubble.textContent = text;
-  list.appendChild(userBubble);
-  list.scrollTop = list.scrollHeight;
-  input.value = "";
-
+async function generatePlan(session, flow) {
+  flow.step = "planning";
+  renderTaskTab(session);
   try {
-    const result = await api(`/api/sessions/${sessionId}/messages`, { method: "POST", body: { text } });
-    const reply = document.createElement("div");
+    // Always plan with OpenCode's built-in read-only "plan" agent, regardless of the
+    // session's own default agent, so proposing a plan never edits files.
+    const result = await api(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      body: { text: flow.taskText, agent: "plan" },
+    });
     if (result.message?.error) {
-      reply.className = "message error";
-      reply.textContent = result.message.error.data?.message || result.message.error.name || "Error";
+      showBanner(result.message.error.data?.message || result.message.error.name || "Planning failed");
+      flow.step = "input";
     } else {
-      reply.className = "message assistant";
-      reply.textContent = result.reply || "(no text reply)";
+      flow.planText = result.reply || "(no plan text returned)";
+      flow.step = "plan";
     }
-    list.appendChild(reply);
-    list.scrollTop = list.scrollHeight;
   } catch (err) {
     showBanner(err.message);
-  } finally {
-    sendBtn.disabled = false;
-    input.disabled = false;
-    input.focus();
+    flow.step = "input";
   }
+  renderTaskTab(session);
+}
+
+async function implementPlan(session, flow) {
+  flow.step = "implementing";
+  renderTaskTab(session);
+  // If the session's own default agent is itself the read-only "plan" agent, force
+  // "build" for the implementation step so accepting a plan can actually edit files.
+  const implementAgent = session.agent && session.agent !== "plan" ? session.agent : "build";
+  try {
+    const result = await api(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      body: { text: "Proceed and implement the plan you just proposed.", agent: implementAgent },
+    });
+    closeEventSource();
+    if (result.message?.error) {
+      flow.resultError = result.message.error.data?.message || result.message.error.name || "Implementation failed";
+      flow.resultText = "";
+    } else {
+      flow.resultText = result.reply || "(no reply text)";
+      flow.resultError = null;
+    }
+    flow.step = "done";
+  } catch (err) {
+    closeEventSource();
+    showBanner(err.message);
+    flow.step = "plan";
+  }
+  renderTaskTab(session);
 }
 
 els.tokenSave.addEventListener("click", () => {

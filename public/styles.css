@@ -321,55 +321,6 @@ button.small {
   min-height: 0;
 }
 
-.messages-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.message {
-  max-width: 80%;
-  padding: 8px 12px;
-  border-radius: 10px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.message.user {
-  align-self: flex-end;
-  background: var(--accent);
-  color: var(--accent-text);
-}
-
-.message.assistant {
-  align-self: flex-start;
-  background: var(--panel);
-  border: 1px solid var(--border);
-}
-
-.message.error {
-  align-self: flex-start;
-  background: var(--danger-bg);
-  color: var(--danger);
-  border: 1px solid var(--danger);
-}
-
-.composer {
-  display: flex;
-  gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--border);
-}
-
-.composer textarea {
-  flex: 1;
-  resize: none;
-  min-height: 44px;
-}
-
 pre.code-view {
   flex: 1;
   overflow: auto;
@@ -530,4 +481,169 @@ pre.code-view {
 .console-line.status {
   color: #9aa1ac;
   font-style: italic;
+}
+
+.console-log.embedded {
+  flex: 1;
+  border-top: 1px solid var(--border);
+  min-height: 120px;
+}
+
+/* Task workflow */
+
+.task-flow {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.step-indicator {
+  display: flex;
+  gap: 4px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 4px 10px 4px 4px;
+  border-radius: 999px;
+}
+
+.step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.step.done {
+  color: var(--text);
+}
+
+.step.done .step-dot {
+  background: var(--ok);
+}
+
+.step.current {
+  color: var(--accent);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.step.current .step-dot {
+  background: var(--accent);
+}
+
+#task-step-body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  gap: 16px;
+}
+
+.task-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 720px;
+}
+
+.task-card h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.task-card textarea {
+  resize: vertical;
+  font-family: inherit;
+}
+
+.task-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.task-loading {
+  align-items: center;
+  text-align: center;
+}
+
+.spinner {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.plan-content {
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+.plan-content p {
+  margin: 0 0 8px;
+}
+
+.plan-content ul,
+.plan-content ol {
+  margin: 0 0 8px;
+  padding-left: 22px;
+}
+
+.plan-content li {
+  margin-bottom: 4px;
+}
+
+.plan-heading {
+  font-weight: 700;
+  margin: 4px 0 6px;
+}
+
+.plan-content code {
+  font-family: ui-monospace, monospace;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 0.9em;
+}
+
+pre.plan-code {
+  background: var(--code-bg);
+  color: var(--code-text);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: ui-monospace, monospace;
+  font-size: 12.5px;
+  margin: 0 0 8px;
+}
+
+pre.plan-code code {
+  background: none;
+  border: none;
+  padding: 0;
 }
