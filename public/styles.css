@@ -483,10 +483,37 @@ pre.code-view {
   font-style: italic;
 }
 
-.console-log.embedded {
+.console-log:empty::after {
+  content: "Waiting for OpenCode to start working…";
+  color: var(--muted);
+  font-style: italic;
+}
+
+.implementing-card {
+  padding: 0;
+  gap: 0;
+  height: 420px;
+  overflow: hidden;
+}
+
+.implementing-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.implementing-header .spinner.small {
+  width: 16px;
+  height: 16px;
+  border-width: 2px;
+}
+
+.implementing-card .console-log {
   flex: 1;
-  border-top: 1px solid var(--border);
-  min-height: 120px;
+  border-radius: 0 0 10px 10px;
 }
 
 /* Task workflow */

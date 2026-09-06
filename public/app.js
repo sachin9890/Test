@@ -428,14 +428,30 @@ async function loadTab(session) {
 
 // ---------- Console (live event stream) ----------
 
-function appendConsoleLine(containerId, className, icon, text) {
+// key -> line element, per container, so a step that fires multiple updates (a tool
+// going pending -> running -> completed, or streaming text) updates one line in place
+// instead of spamming duplicates — this is what makes the log read as real steps.
+const consoleLineElements = new Map();
+
+function upsertConsoleLine(containerId, key, className, icon, text) {
   const log = document.getElementById(containerId);
   if (!log) return;
-  const line = document.createElement("div");
+  const mapKey = `${containerId}:${key}`;
+  let line = consoleLineElements.get(mapKey);
+  if (!line) {
+    line = document.createElement("div");
+    line.innerHTML = '<span class="icon"></span><span class="text"></span>';
+    log.appendChild(line);
+    consoleLineElements.set(mapKey, line);
+  }
   line.className = "console-line " + className;
-  line.innerHTML = `<span class="icon">${icon}</span><span>${escapeHtml(text)}</span>`;
-  log.appendChild(line);
+  line.querySelector(".icon").textContent = icon;
+  line.querySelector(".text").textContent = text;
   log.scrollTop = log.scrollHeight;
+}
+
+function appendConsoleLine(containerId, className, icon, text) {
+  upsertConsoleLine(containerId, `once-${Date.now()}-${Math.random()}`, className, icon, text);
 }
 
 function handleConsoleEvent(containerId, event) {
@@ -446,12 +462,13 @@ function handleConsoleEvent(containerId, event) {
       if (part?.type === "tool") {
         const status = part.state?.status;
         const title = part.state?.title || part.tool;
-        if (status === "running") appendConsoleLine(containerId, "tool", "🔧", `${part.tool} — ${title}…`);
-        else if (status === "completed") appendConsoleLine(containerId, "tool", "✅", `${part.tool} — ${title}`);
+        if (status === "pending") upsertConsoleLine(containerId, part.id, "tool", "⏱️", `${part.tool} — queued…`);
+        else if (status === "running") upsertConsoleLine(containerId, part.id, "tool", "🔧", `${part.tool} — ${title}…`);
+        else if (status === "completed") upsertConsoleLine(containerId, part.id, "tool", "✅", `${part.tool} — ${title}`);
         else if (status === "error")
-          appendConsoleLine(containerId, "error", "❌", `${part.tool} failed: ${part.state?.error || ""}`);
+          upsertConsoleLine(containerId, part.id, "error", "❌", `${part.tool} failed: ${part.state?.error || ""}`);
       } else if (part?.type === "text" && part.text) {
-        appendConsoleLine(containerId, "text", "💬", part.text);
+        upsertConsoleLine(containerId, part.id, "text", "💬", part.text);
       }
       break;
     }
@@ -478,6 +495,12 @@ function handleConsoleEvent(containerId, event) {
 }
 
 function openConsole(sessionId, containerId) {
+  // The container div is freshly re-created each time this is called (a new task run,
+  // or switching back to the tab), so drop any stale line references from before.
+  for (const key of [...consoleLineElements.keys()]) {
+    if (key.startsWith(`${containerId}:`)) consoleLineElements.delete(key);
+  }
+
   const url = `/api/sessions/${sessionId}/events?token=${encodeURIComponent(state.token)}`;
   const es = new EventSource(url);
   state.eventSource = es;
@@ -663,11 +686,13 @@ function renderTaskTab(session) {
 
   if (flow.step === "implementing") {
     body.innerHTML = `
-      <div class="task-card task-loading">
-        <div class="spinner"></div>
-        <p>Implementing the plan…</p>
+      <div class="task-card implementing-card">
+        <div class="implementing-header">
+          <div class="spinner small"></div>
+          <span>Implementing the plan…</span>
+        </div>
+        <div id="task-console-log" class="console-log"></div>
       </div>
-      <div id="task-console-log" class="console-log embedded"></div>
     `;
     openConsole(session.id, "task-console-log");
     return;
