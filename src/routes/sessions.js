@@ -1,4 +1,5 @@
 import { Router } from "express";
+import * as customizations from "../customizations.js";
 import { streamSessionEvents } from "../events.js";
 import * as git from "../git.js";
 import { HttpError } from "../httpError.js";
@@ -24,9 +25,12 @@ function validateModel(model) {
 }
 
 sessionsRouter.post("/", async (req, res) => {
-  const { projectId, title, agent, model } = req.body || {};
+  const { projectId, title, agent, model, customizations: customList } = req.body || {};
   if (!projectId || typeof projectId !== "string") {
     throw new HttpError(400, 'Request body must include a "projectId" string');
+  }
+  if (customList !== undefined && !Array.isArray(customList)) {
+    throw new HttpError(400, "customizations must be an array");
   }
 
   const project = projects.getProject(projectId); // 404 if unknown
@@ -34,6 +38,16 @@ sessionsRouter.post("/", async (req, res) => {
   const worktree = await git.addWorktree(project);
 
   try {
+    // Session-only skills/agents/commands, applied to this worktree before OpenCode
+    // ever looks at it. This ordering matters: OpenCode caches what it discovers in a
+    // directory for the life of its process, with no live invalidation, so writing
+    // these before the directory's first-ever query is the only way that's guaranteed
+    // to work — adding them to an already-created session would silently not apply
+    // until the whole app restarts, which is why that isn't offered as a separate step.
+    for (const item of customList || []) {
+      await customizations.addCustomization(worktree.path, item.type, item);
+    }
+
     const client = getClient();
     const { data, error } = await client.session.create({
       query: { directory: worktree.path },
@@ -140,6 +154,14 @@ sessionsRouter.get("/:id/status", async (req, res) => {
 sessionsRouter.get("/:id/diff", async (req, res) => {
   const diff = await git.diffFor(req.params.id);
   res.type("text/plain").send(diff);
+});
+
+// What this session actually sees: its project's committed skills/agents/commands plus
+// any one-off ones given at creation time (see POST / above). Read-only — see the note
+// there on why adding to an already-created session isn't offered.
+sessionsRouter.get("/:id/customizations", async (req, res) => {
+  const record = git.getWorktree(req.params.id);
+  res.json(await customizations.listCustomizations(record.path));
 });
 
 // Live console: streams OpenCode's tool-call / file-edit / message events for this

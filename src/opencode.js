@@ -30,6 +30,15 @@ export function getClient() {
   return client;
 }
 
+// The installed @opencode-ai/sdk client doesn't wrap OpenCode's newer /api/* endpoints
+// (skill/agent/command discovery) — this is used to call them directly instead.
+export function getServerUrl() {
+  if (!serverHandle) {
+    throw new Error("OpenCode server not started — call startOpencode() first");
+  }
+  return serverHandle.url;
+}
+
 export function stopOpencode() {
   serverHandle?.close();
 }

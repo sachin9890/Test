@@ -436,6 +436,60 @@ pre.code-view {
   margin-top: 4px;
 }
 
+details.field summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 13px;
+  list-style: none;
+}
+
+details.field summary::-webkit-details-marker {
+  display: none;
+}
+
+details.field summary::before {
+  content: "▸ ";
+}
+
+details.field[open] summary::before {
+  content: "▾ ";
+}
+
+details.field > *:not(summary) {
+  margin-top: 10px;
+}
+
+.custom-list,
+.staged-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.custom-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.custom-item .info {
+  flex: 1;
+  min-width: 0;
+}
+
+.custom-item .name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.custom-item .desc {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* Console tab */
 
 .console-log {

@@ -120,6 +120,7 @@ function renderProjects() {
         <div class="repo" title="${escapeHtml(p.repoUrl)}">${escapeHtml(p.repoUrl)}${p.branch ? " @ " + escapeHtml(p.branch) : ""}</div>
       </div>
       ${p.hasToken ? '<span class="badge">PAT</span>' : ""}
+      <button class="icon-btn" data-customize-project="${p.id}" title="Skills, agents & commands">⚙</button>
       <button class="icon-btn" data-delete-project="${p.id}" title="Delete project">&times;</button>
     `;
     els.projectsList.appendChild(item);
@@ -127,6 +128,9 @@ function renderProjects() {
 
   for (const btn of els.projectsList.querySelectorAll("[data-delete-project]")) {
     btn.addEventListener("click", () => deleteProject(btn.dataset.deleteProject));
+  }
+  for (const btn of els.projectsList.querySelectorAll("[data-customize-project]")) {
+    btn.addEventListener("click", () => openProjectCustomizationsModal(btn.dataset.customizeProject));
   }
 }
 
@@ -138,6 +142,178 @@ async function deleteProject(id) {
   } catch (err) {
     showBanner(err.message);
   }
+}
+
+// ---------- Skills / agents / commands (shared between project + new-session UI) ----------
+
+const CUSTOMIZATION_LABELS = { skill: "Skill", agent: "Agent", command: "Command" };
+
+function customizationFieldsHtml(prefix) {
+  return `
+    <div class="field">
+      <label for="${prefix}-type">Type</label>
+      <select id="${prefix}-type">
+        <option value="skill">Skill — auto-triggered by OpenCode based on the task</option>
+        <option value="agent">Agent — a selectable persona (model, permissions, prompt)</option>
+        <option value="command">Command — a reusable slash-command template</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="${prefix}-name">Name</label>
+      <input id="${prefix}-name" type="text" placeholder="my-skill" />
+      <div class="field-hint">lowercase, hyphen-separated (matches OpenCode's own naming rule)</div>
+    </div>
+    <div class="field">
+      <label for="${prefix}-description">Description</label>
+      <input id="${prefix}-description" type="text" placeholder="What it does, and when OpenCode should use it" />
+    </div>
+    <div id="${prefix}-agent-fields" class="field" hidden>
+      <label>Agent options</label>
+      <div style="display:flex;gap:8px">
+        <select id="${prefix}-mode" style="flex:1">
+          <option value="primary">primary</option>
+          <option value="subagent">subagent</option>
+          <option value="all">all</option>
+        </select>
+        <select id="${prefix}-edit-permission" style="flex:1">
+          <option value="ask">edit: ask</option>
+          <option value="allow">edit: allow</option>
+          <option value="deny">edit: deny</option>
+        </select>
+      </div>
+    </div>
+    <div id="${prefix}-command-fields" class="field" hidden>
+      <label for="${prefix}-agent-name">Runs with agent (optional)</label>
+      <input id="${prefix}-agent-name" type="text" placeholder="build" />
+    </div>
+    <div class="field">
+      <label for="${prefix}-body">${"Instructions / prompt / template"}</label>
+      <textarea id="${prefix}-body" rows="4" placeholder="Markdown body. Commands can use $ARGUMENTS."></textarea>
+    </div>
+  `;
+}
+
+function wireCustomizationTypeToggle(prefix) {
+  const typeSelect = document.getElementById(`${prefix}-type`);
+  const agentFields = document.getElementById(`${prefix}-agent-fields`);
+  const commandFields = document.getElementById(`${prefix}-command-fields`);
+  const update = () => {
+    agentFields.hidden = typeSelect.value !== "agent";
+    commandFields.hidden = typeSelect.value !== "command";
+  };
+  typeSelect.addEventListener("change", update);
+  update();
+}
+
+function readCustomizationFields(prefix) {
+  const type = document.getElementById(`${prefix}-type`).value;
+  const name = document.getElementById(`${prefix}-name`).value.trim();
+  const description = document.getElementById(`${prefix}-description`).value.trim();
+  const body = document.getElementById(`${prefix}-body`).value;
+  if (!name || !description) {
+    showBanner("Name and description are required.");
+    return null;
+  }
+  const fields = { type, name, description, body };
+  if (type === "agent") {
+    fields.mode = document.getElementById(`${prefix}-mode`).value;
+    fields.editPermission = document.getElementById(`${prefix}-edit-permission`).value;
+  } else if (type === "command") {
+    fields.agent = document.getElementById(`${prefix}-agent-name`).value.trim() || undefined;
+  }
+  return fields;
+}
+
+function clearCustomizationFields(prefix) {
+  document.getElementById(`${prefix}-name`).value = "";
+  document.getElementById(`${prefix}-description`).value = "";
+  document.getElementById(`${prefix}-body`).value = "";
+}
+
+function renderCustomizationList(items, type, { deletable }) {
+  if (items.length === 0) return '<div class="hint">None.</div>';
+  return items
+    .map((item) => {
+      const isCustom = Boolean(item.location && item.location.includes(".opencode/"));
+      return `
+        <div class="custom-item">
+          <div class="info">
+            <div class="name">${escapeHtml(item.name)}${isCustom ? "" : ' <span class="badge">built-in</span>'}</div>
+            <div class="desc">${escapeHtml(item.description || "")}</div>
+          </div>
+          ${isCustom && deletable ? `<button class="icon-btn" data-remove="${type}:${escapeHtml(item.name)}" title="Remove">&times;</button>` : ""}
+        </div>
+      `;
+    })
+    .join("");
+}
+
+async function openProjectCustomizationsModal(projectId) {
+  const project = state.projects.find((p) => p.id === projectId);
+  if (!project) return;
+
+  openModal(`Customize “${project.name}”`, '<div class="hint">Loading…</div>');
+
+  async function render() {
+    let data;
+    try {
+      data = await api(`/api/projects/${projectId}/customizations`);
+    } catch (err) {
+      els.modalBody.innerHTML = `<div class="hint">Error: ${escapeHtml(err.message)}</div>`;
+      return;
+    }
+
+    els.modalBody.innerHTML = `
+      <p class="hint">Added here becomes part of the project's repo (committed automatically) — every
+      new session created from this project will inherit it. Existing sessions won't see it retroactively.</p>
+      ${["skill", "agent", "command"]
+        .map(
+          (type) => `
+        <div class="field">
+          <label>${CUSTOMIZATION_LABELS[type]}s</label>
+          <div class="custom-list">${renderCustomizationList(data[type], type, { deletable: true })}</div>
+        </div>
+      `,
+        )
+        .join("")}
+      <hr style="border:none;border-top:1px solid var(--border);width:100%" />
+      <h3 style="margin:0">Add new</h3>
+      ${customizationFieldsHtml("proj-custom")}
+      <div class="modal-actions">
+        <button id="submit-project-customization" class="primary">Add to project</button>
+      </div>
+    `;
+
+    wireCustomizationTypeToggle("proj-custom");
+
+    for (const btn of els.modalBody.querySelectorAll("[data-remove]")) {
+      btn.addEventListener("click", async () => {
+        const [type, name] = btn.dataset.remove.split(":");
+        try {
+          await api(`/api/projects/${projectId}/customizations/${type}/${encodeURIComponent(name)}`, { method: "DELETE" });
+          await render();
+        } catch (err) {
+          showBanner(err.message);
+        }
+      });
+    }
+
+    document.getElementById("submit-project-customization").addEventListener("click", async () => {
+      const fields = readCustomizationFields("proj-custom");
+      if (!fields) return;
+      const btn = document.getElementById("submit-project-customization");
+      btn.disabled = true;
+      try {
+        await api(`/api/projects/${projectId}/customizations`, { method: "POST", body: fields });
+        await render();
+      } catch (err) {
+        showBanner(err.message);
+        btn.disabled = false;
+      }
+    });
+  }
+
+  await render();
 }
 
 function openAddProjectModal() {
@@ -268,6 +444,8 @@ async function openNewSessionModal() {
     )
     .join("");
 
+  const stagedCustomizations = [];
+
   openModal(
     "New session",
     `
@@ -287,12 +465,55 @@ async function openNewSessionModal() {
       <label for="session-model">Model</label>
       <select id="session-model"><option value="">(default)</option>${modelOptions}</select>
     </div>
+
+    <details class="field">
+      <summary>Add a skill/agent/command for this session only (optional)</summary>
+      <p class="field-hint">Only this session sees it. Applied when the session is created — it can't be
+      added after the fact (OpenCode caches what it discovers in a directory, so only-just-created sessions
+      pick up new files reliably).</p>
+      ${customizationFieldsHtml("new-session-custom")}
+      <div class="task-actions">
+        <button id="stage-customization-btn">+ Add to this session</button>
+      </div>
+      <div id="staged-customizations-list" class="staged-list"></div>
+    </details>
+
     <div class="modal-actions">
       <button id="cancel-new-session">Cancel</button>
       <button id="submit-new-session" class="primary">Create</button>
     </div>
   `,
   );
+
+  wireCustomizationTypeToggle("new-session-custom");
+
+  function renderStagedList() {
+    const list = document.getElementById("staged-customizations-list");
+    if (stagedCustomizations.length === 0) {
+      list.innerHTML = "";
+      return;
+    }
+    list.innerHTML = stagedCustomizations
+      .map(
+        (c, i) =>
+          `<div class="custom-item"><div class="info"><div class="name">${escapeHtml(CUSTOMIZATION_LABELS[c.type])}: ${escapeHtml(c.name)}</div><div class="desc">${escapeHtml(c.description)}</div></div><button class="icon-btn" data-unstage="${i}" title="Remove">&times;</button></div>`,
+      )
+      .join("");
+    for (const btn of list.querySelectorAll("[data-unstage]")) {
+      btn.addEventListener("click", () => {
+        stagedCustomizations.splice(Number(btn.dataset.unstage), 1);
+        renderStagedList();
+      });
+    }
+  }
+
+  document.getElementById("stage-customization-btn").addEventListener("click", () => {
+    const fields = readCustomizationFields("new-session-custom");
+    if (!fields) return;
+    stagedCustomizations.push(fields);
+    clearCustomizationFields("new-session-custom");
+    renderStagedList();
+  });
 
   document.getElementById("cancel-new-session").addEventListener("click", closeModal);
   document.getElementById("submit-new-session").addEventListener("click", async () => {
@@ -308,7 +529,13 @@ async function openNewSessionModal() {
     try {
       const created = await api("/api/sessions", {
         method: "POST",
-        body: { projectId, title: title || undefined, agent: agent || undefined, model },
+        body: {
+          projectId,
+          title: title || undefined,
+          agent: agent || undefined,
+          model,
+          customizations: stagedCustomizations.length ? stagedCustomizations : undefined,
+        },
       });
       closeModal();
       await refreshSessions();
@@ -359,6 +586,7 @@ function renderDetail() {
       <button class="tab-btn" data-tab="console">Console</button>
       <button class="tab-btn" data-tab="status">Status</button>
       <button class="tab-btn" data-tab="diff">Diff</button>
+      <button class="tab-btn" data-tab="setup">Setup</button>
     </div>
     <div id="tab-content" class="tab-content"></div>
   `;
@@ -422,6 +650,35 @@ async function loadTab(session) {
       pre.textContent = diff.trim() || "No changes yet.";
     } catch (err) {
       pre.textContent = "Error: " + err.message;
+    }
+    return;
+  }
+
+  if (state.tab === "setup") {
+    container.innerHTML = '<div class="hint" style="padding:20px">Loading…</div>';
+    try {
+      const data = await api(`/api/sessions/${session.id}/customizations`);
+      container.innerHTML = `
+        <div id="task-step-body">
+          <div class="task-card">
+            <p class="hint">What this session actually sees right now: built-ins, whatever the project's
+            repo has committed, and anything added at creation time. Read-only — see the New Session dialog
+            to add session-only ones, or the project's ⚙ button for ones every future session should inherit.</p>
+            ${["skill", "agent", "command"]
+              .map(
+                (type) => `
+              <div class="field">
+                <label>${CUSTOMIZATION_LABELS[type]}s</label>
+                <div class="custom-list">${renderCustomizationList(data[type], type, { deletable: false })}</div>
+              </div>
+            `,
+              )
+              .join("")}
+          </div>
+        </div>
+      `;
+    } catch (err) {
+      container.innerHTML = `<div class="hint" style="padding:20px">Error: ${escapeHtml(err.message)}</div>`;
     }
   }
 }

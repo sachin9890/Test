@@ -54,6 +54,37 @@ the `Authorization` header (except the live console stream, see the security not
 - **Console** — the same live event stream as a standalone tab, so you can watch a session's activity at any
   time, not just right after accepting a plan.
 - **Status** / **Diff** — the session worktree's real `git status` / `git diff`.
+- **Setup** — read-only: exactly what this session sees — built-ins, whatever the project's repo has, and
+  anything added at creation time.
+- **⚙ on a project** — add custom skills, agents, or commands, in OpenCode's own format (see below).
+
+### Skills, agents & commands
+
+These work exactly like the OpenCode CLI's own — a skill/agent/command is just a markdown file with
+frontmatter under `.opencode/`, and OpenCode auto-discovers whatever's in a directory when it starts working
+there. This app gives you two places to add one, matching how OpenCode actually loads them:
+
+- **Project-level** (the project's ⚙ button) — written into the project's own repo and committed there, so
+  every session created *after that point* inherits it (a new session's worktree is checked out from the
+  project's current commit). Sessions that already exist won't see it retroactively.
+- **Session-level** (the "add for this session only" section in the New Session dialog) — written straight
+  into that one session's worktree, before the session is created.
+
+Both land in the same place OpenCode itself would look: `.opencode/skills/<name>/SKILL.md` for skills,
+`.opencode/agent/<name>.md` for agents, `.opencode/command/<name>.md` for commands.
+
+One real constraint worth knowing, found by testing against a running OpenCode server directly: it caches
+what it discovers in a directory for the life of its process — with no live invalidation. A brand-new
+directory (a session's fresh worktree) always reflects what's on disk correctly the first time it's queried,
+but adding a file to a directory OpenCode has *already* looked at won't be picked up until the whole app
+restarts. That's why session-level additions are only offered at session-creation time (before OpenCode ever
+sees that worktree) rather than as an "add anytime" action on an existing session — the latter would silently
+not work.
+
+MCP servers and plugins are deliberately not exposed here: a plugin is a JS/TS module the server would
+`import()` and execute, and an MCP server spawns an arbitrary subprocess or calls an arbitrary remote
+endpoint — accepting those from the same UI/API surface a remote user's API token can reach would mean
+anyone with that token gets code execution on the host.
 
 ## How it works
 
@@ -89,9 +120,12 @@ security notes). `/health` does not require auth.
 | POST   | `/api/projects`                  | Add + clone a project: `{ name, repoUrl, branch?, pat? }`.                  |
 | POST   | `/api/projects/:id/pull`         | Fast-forward pull the project's default branch.                            |
 | DELETE | `/api/projects/:id`              | Delete a project (fails with 409 if it still has sessions).                |
+| GET    | `/api/projects/:id/customizations` | List this project's own skills/agents/commands (not built-ins/globals).  |
+| POST   | `/api/projects/:id/customizations` | Add one, committed to the project's repo: `{ type, name, description, body, ... }`. |
+| DELETE | `/api/projects/:id/customizations/:type/:name` | Remove one, committed to the project's repo.                |
 | GET    | `/api/meta/providers`            | Model providers/models actually configured on this host.                   |
 | GET    | `/api/meta/agents`               | Available agents (built-in `build`/`plan` plus any the project defines).   |
-| POST   | `/api/sessions`                  | Create a session: `{ projectId, title?, agent?, model? }` (`model` is `{ providerID, modelID }`). |
+| POST   | `/api/sessions`                  | Create a session: `{ projectId, title?, agent?, model?, customizations? }` (`model` is `{ providerID, modelID }`; `customizations` is an array of `{ type, name, description, body, ... }`, applied to this session only, before it's created). |
 | GET    | `/api/sessions`                  | List active sessions with their project/worktree/branch info.              |
 | DELETE | `/api/sessions/:id`              | Delete a session + worktree. `?force=true` discards uncommitted changes.   |
 | GET    | `/api/sessions/:id/messages`     | Get the session's message history.                                        |
@@ -99,6 +133,7 @@ security notes). `/health` does not require auth.
 | GET    | `/api/sessions/:id/status`       | `git status --porcelain` for the session's worktree.                      |
 | GET    | `/api/sessions/:id/diff`         | `git diff` for the session's worktree.                                    |
 | GET    | `/api/sessions/:id/events`       | Server-Sent Events stream of that session's live OpenCode activity.       |
+| GET    | `/api/sessions/:id/customizations` | What this session actually sees: built-ins + project's + its own one-off ones. |
 
 ### Example
 
