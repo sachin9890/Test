@@ -1,3 +1,10 @@
+/* Any element (a .field, a flex/grid container, etc.) can carry the hidden attribute to
+   be toggled from JS — without !important here, a class setting display:flex/grid on the
+   same element wins the cascade over the UA's [hidden]{display:none} and it stays visible. */
+[hidden] {
+  display: none !important;
+}
+
 :root {
   color-scheme: light dark;
   --bg: #f6f7f9;
@@ -83,13 +90,15 @@ header h1 {
 }
 
 input,
-textarea {
+textarea,
+select {
   font: inherit;
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 10px;
+  border-radius: 7px;
+  padding: 7px 10px;
+  transition: border-color 0.12s, box-shadow 0.12s;
 }
 
 input[type="text"],
@@ -97,24 +106,58 @@ input[type="password"] {
   min-width: 200px;
 }
 
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  cursor: pointer;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted);
+  opacity: 0.75;
+}
+
 button {
   font: inherit;
   border: 1px solid var(--border);
   background: var(--panel);
   color: var(--text);
-  border-radius: 6px;
-  padding: 6px 12px;
+  border-radius: 7px;
+  padding: 7px 14px;
   cursor: pointer;
+  transition: border-color 0.12s, background 0.12s, transform 0.05s;
 }
 
 button:hover {
   border-color: var(--accent);
 }
 
+button:active {
+  transform: scale(0.98);
+}
+
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-text);
+  font-weight: 600;
+}
+
+button.primary:hover {
+  filter: brightness(1.08);
 }
 
 button.danger {
@@ -122,9 +165,14 @@ button.danger {
   border-color: var(--danger);
 }
 
+button.danger:hover {
+  background: var(--danger-bg);
+}
+
 button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+  transform: none;
 }
 
 main {
@@ -384,50 +432,60 @@ pre.code-view {
   z-index: 100;
 }
 
-.modal-overlay[hidden] {
-  display: none;
-}
-
 .modal {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  width: 420px;
+  border-radius: 12px;
+  width: 480px;
   max-width: calc(100vw - 32px);
-  max-height: calc(100vh - 32px);
+  max-height: calc(100vh - 48px);
   overflow-y: auto;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+
+.modal.modal-lg {
+  width: 580px;
 }
 
 .modal-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 14px 16px;
+  gap: 10px;
+  padding: 16px 18px;
   border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
 }
 
 .modal-head h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .modal-body {
-  padding: 16px;
+  padding: 18px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
 }
 
 .field label {
-  font-size: 12px;
-  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .field input,
@@ -437,8 +495,9 @@ pre.code-view {
 }
 
 .field .field-hint {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--muted);
+  line-height: 1.4;
 }
 
 .modal-actions {
@@ -448,11 +507,66 @@ pre.code-view {
   margin-top: 4px;
 }
 
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.field-section {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+}
+
+.field-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.field-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.field-toggle input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+details.field {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--bg) 60%, transparent);
+  gap: 0;
+}
+
 details.field summary {
   cursor: pointer;
-  color: var(--accent);
   font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
   list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 details.field summary::-webkit-details-marker {
@@ -460,15 +574,22 @@ details.field summary::-webkit-details-marker {
 }
 
 details.field summary::before {
-  content: "▸ ";
+  content: "▸";
+  color: var(--muted);
+  font-size: 11px;
+  transition: transform 0.12s;
 }
 
 details.field[open] summary::before {
-  content: "▾ ";
+  transform: rotate(90deg);
 }
 
 details.field > *:not(summary) {
-  margin-top: 10px;
+  margin-top: 12px;
+}
+
+details.field > .field:not(summary) {
+  margin-top: 12px;
 }
 
 .custom-list,
@@ -481,10 +602,28 @@ details.field > *:not(summary) {
 .custom-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 10px;
+  padding: 9px 11px;
   border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  transition: border-color 0.12s;
+}
+
+.custom-item:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.custom-item .type-icon {
+  flex-shrink: 0;
+  font-size: 15px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .custom-item .info {
