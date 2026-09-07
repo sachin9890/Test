@@ -8,6 +8,16 @@ const state = {
   taskFlows: new Map(), // sessionId -> { step, taskText, planText, resultText, resultError }
 };
 
+// Bumped on every navigation (session switch, tab switch, re-render). Async work
+// (plan/implement requests, status/diff/setup fetches) captures the value at the moment
+// it starts and checks it again once it resolves — if the user has since navigated
+// elsewhere, the response is stale and must not touch the DOM (it would otherwise
+// silently overwrite whatever the user is currently looking at).
+let viewToken = 0;
+function isCurrentView(sessionId, tab, token) {
+  return token === viewToken && state.selectedId === sessionId && state.tab === tab;
+}
+
 const els = {
   statusDot: document.getElementById("status-dot"),
   banner: document.getElementById("banner"),
@@ -414,9 +424,11 @@ function renderSessions() {
     return;
   }
   for (const s of state.sessions) {
+    const flow = state.taskFlows.get(s.id);
+    const busy = flow?.step === "planning" || flow?.step === "implementing";
     const item = document.createElement("div");
     item.className = "session-item" + (s.id === state.selectedId ? " active" : "");
-    item.innerHTML = `<div class="title">${escapeHtml(s.title || shortId(s.id))}</div><div class="branch">${escapeHtml(s.projectName || "")} · ${escapeHtml(s.branch)}</div>`;
+    item.innerHTML = `<div class="title">${busy ? '<span class="mini-spinner" title="Working…"></span>' : ""}${escapeHtml(s.title || shortId(s.id))}</div><div class="branch">${escapeHtml(s.projectName || "")} · ${escapeHtml(s.branch)}</div>`;
     item.addEventListener("click", () => selectSession(s.id));
     els.sessionsList.appendChild(item);
   }
@@ -566,6 +578,7 @@ function selectSession(id) {
 }
 
 function renderDetail() {
+  viewToken++;
   closeEventSource();
   const session = state.sessions.find((s) => s.id === state.selectedId);
   if (!session) {
@@ -618,47 +631,53 @@ function renderDetail() {
 
 async function loadTab(session) {
   const container = document.getElementById("tab-content");
+  const tab = state.tab;
+  const token = viewToken;
+  const stillCurrent = () => isCurrentView(session.id, tab, token);
 
-  if (state.tab === "task") {
+  if (tab === "task") {
     renderTaskTab(session);
     return;
   }
 
-  if (state.tab === "console") {
+  if (tab === "console") {
     container.innerHTML = '<div id="console-log" class="console-log"></div>';
     openConsole(session.id, "console-log");
     return;
   }
 
-  if (state.tab === "status") {
+  if (tab === "status") {
     container.innerHTML = '<pre class="code-view">Loading…</pre>';
-    const pre = container.querySelector("pre");
+    let text;
     try {
       const data = await api(`/api/sessions/${session.id}/status`);
-      pre.textContent = data.status.trim() || "Working tree clean.";
+      text = data.status.trim() || "Working tree clean.";
     } catch (err) {
-      pre.textContent = "Error: " + err.message;
+      text = "Error: " + err.message;
     }
+    if (stillCurrent()) container.querySelector("pre").textContent = text;
     return;
   }
 
-  if (state.tab === "diff") {
+  if (tab === "diff") {
     container.innerHTML = '<pre class="code-view">Loading…</pre>';
-    const pre = container.querySelector("pre");
+    let text;
     try {
       const diff = await api(`/api/sessions/${session.id}/diff`);
-      pre.textContent = diff.trim() || "No changes yet.";
+      text = diff.trim() || "No changes yet.";
     } catch (err) {
-      pre.textContent = "Error: " + err.message;
+      text = "Error: " + err.message;
     }
+    if (stillCurrent()) container.querySelector("pre").textContent = text;
     return;
   }
 
-  if (state.tab === "setup") {
+  if (tab === "setup") {
     container.innerHTML = '<div class="hint" style="padding:20px">Loading…</div>';
+    let html;
     try {
       const data = await api(`/api/sessions/${session.id}/customizations`);
-      container.innerHTML = `
+      html = `
         <div id="task-step-body">
           <div class="task-card">
             <p class="hint">What this session actually sees right now: built-ins, whatever the project's
@@ -678,8 +697,9 @@ async function loadTab(session) {
         </div>
       `;
     } catch (err) {
-      container.innerHTML = `<div class="hint" style="padding:20px">Error: ${escapeHtml(err.message)}</div>`;
+      html = `<div class="hint" style="padding:20px">Error: ${escapeHtml(err.message)}</div>`;
     }
+    if (stillCurrent()) container.innerHTML = html;
   }
 }
 
@@ -977,9 +997,17 @@ function renderTaskTab(session) {
   }
 }
 
+function sessionLabel(session) {
+  return session.title || shortId(session.id);
+}
+
 async function generatePlan(session, flow) {
+  const token = viewToken;
+  const stillCurrent = () => isCurrentView(session.id, "task", token);
+
   flow.step = "planning";
-  renderTaskTab(session);
+  if (stillCurrent()) renderTaskTab(session);
+  renderSessions(); // shows the busy indicator next to this session in the sidebar
   try {
     // Always plan with OpenCode's built-in read-only "plan" agent, regardless of the
     // session's own default agent, so proposing a plan never edits files.
@@ -988,22 +1016,33 @@ async function generatePlan(session, flow) {
       body: { text: flow.taskText, agent: "plan" },
     });
     if (result.message?.error) {
-      showBanner(result.message.error.data?.message || result.message.error.name || "Planning failed");
+      const message = result.message.error.data?.message || result.message.error.name || "Planning failed";
+      showBanner(stillCurrent() ? message : `“${sessionLabel(session)}”: ${message}`);
       flow.step = "input";
     } else {
       flow.planText = result.reply || "(no plan text returned)";
       flow.step = "plan";
+      if (!stillCurrent()) showBanner(`Plan ready for “${sessionLabel(session)}” — switch to it to review.`);
     }
   } catch (err) {
-    showBanner(err.message);
+    showBanner(stillCurrent() ? err.message : `“${sessionLabel(session)}”: ${err.message}`);
     flow.step = "input";
   }
-  renderTaskTab(session);
+  // Still applies even if the user navigated away: next time they open this session's
+  // Task tab, renderTaskTab reads flow.step fresh and shows the right screen. Only the
+  // *immediate* re-render is skipped so a slow response can't clobber whatever the user
+  // is looking at now.
+  if (stillCurrent()) renderTaskTab(session);
+  renderSessions();
 }
 
 async function implementPlan(session, flow) {
+  const token = viewToken;
+  const stillCurrent = () => isCurrentView(session.id, "task", token);
+
   flow.step = "implementing";
-  renderTaskTab(session);
+  if (stillCurrent()) renderTaskTab(session);
+  renderSessions();
   // If the session's own default agent is itself the read-only "plan" agent, force
   // "build" for the implementation step so accepting a plan can actually edit files.
   const implementAgent = session.agent && session.agent !== "plan" ? session.agent : "build";
@@ -1012,7 +1051,9 @@ async function implementPlan(session, flow) {
       method: "POST",
       body: { text: "Proceed and implement the plan you just proposed.", agent: implementAgent },
     });
-    closeEventSource();
+    // Only tear down the live event source if it's still ours — the user may have since
+    // navigated to a different session/console, which owns state.eventSource now.
+    if (stillCurrent()) closeEventSource();
     if (result.message?.error) {
       flow.resultError = result.message.error.data?.message || result.message.error.name || "Implementation failed";
       flow.resultText = "";
@@ -1021,12 +1062,24 @@ async function implementPlan(session, flow) {
       flow.resultError = null;
     }
     flow.step = "done";
+    if (!stillCurrent()) {
+      showBanner(
+        flow.resultError
+          ? `“${sessionLabel(session)}” finished with an error — switch to it to see what happened.`
+          : `“${sessionLabel(session)}” finished implementing — switch to it to see the result.`,
+      );
+    }
   } catch (err) {
-    closeEventSource();
-    showBanner(err.message);
+    if (stillCurrent()) {
+      closeEventSource();
+      showBanner(err.message);
+    } else {
+      showBanner(`“${sessionLabel(session)}”: ${err.message}`);
+    }
     flow.step = "plan";
   }
-  renderTaskTab(session);
+  if (stillCurrent()) renderTaskTab(session);
+  renderSessions();
 }
 
 els.tokenSave.addEventListener("click", () => {

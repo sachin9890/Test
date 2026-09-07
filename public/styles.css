@@ -257,6 +257,18 @@ button.small {
   white-space: nowrap;
 }
 
+.mini-spinner {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 6px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+  vertical-align: middle;
+}
+
 .session-item .branch {
   color: var(--muted);
   font-family: ui-monospace, monospace;
