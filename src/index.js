@@ -34,7 +34,14 @@ async function main() {
   app.use("/api/projects", authMiddleware, projectsRouter);
   app.use("/api/meta", authMiddleware, metaRouter);
   app.use("/api/sessions", authMiddleware, sessionsRouter);
-  app.use(express.static(publicDir));
+  // Never let a browser (or intermediary proxy) cache the UI — this is a small internal
+  // tool, not a CDN-fronted app, and "why isn't my change showing" is worse than the
+  // negligible cost of a fresh fetch each load.
+  app.use(
+    express.static(publicDir, {
+      setHeaders: (res) => res.set("Cache-Control", "no-store"),
+    }),
+  );
   app.use(errorHandler);
 
   const host = process.env.HOST || "0.0.0.0";
