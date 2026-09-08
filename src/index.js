@@ -14,6 +14,22 @@ import { sessionsRouter } from "./routes/sessions.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "..", "public");
 
+// A crash (as opposed to a graceful SIGINT/SIGTERM shutdown) skips the `shutdown()`
+// handler below entirely, leaving the embedded OpenCode server as an orphaned child
+// still holding its port — every restart after that fails to bind until someone finds
+// and kills it by hand. Covering these two paths too is what makes a crash self-heal
+// (nodemon restarts into a free port) instead of wedging the app until manual cleanup.
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception:", err);
+  stopOpencode();
+  process.exit(1);
+});
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled rejection:", err);
+  stopOpencode();
+  process.exit(1);
+});
+
 async function main() {
   if (!process.env.API_TOKEN) {
     console.error("API_TOKEN environment variable is required.");
@@ -22,6 +38,7 @@ async function main() {
 
   await git.ensureWorktreesDir();
   await projects.loadProjects();
+  await git.loadSessions();
 
   const opencodeServer = await startOpencode();
   getClient(); // fail fast if the client didn't initialize

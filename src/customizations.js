@@ -32,6 +32,21 @@ function frontmatter(fields) {
   return lines.join("\n");
 }
 
+// Normally `body` is just prose (that's what the app's own UI collects — a plain
+// "instructions" textarea, no front-matter). But this is also a plain API, and a caller
+// can reasonably pass a `body` that's already a complete file — front-matter included
+// (e.g. an existing SKILL.md pasted in whole). Prepending a second, generated
+// front-matter block on top of that would produce two stacked `---` blocks, so detect
+// an existing one and leave it alone rather than double-wrapping it.
+function hasOwnFrontmatter(body) {
+  return /^---\s*\n/.test((body || "").trim());
+}
+
+function renderWithFrontmatter(fields, body) {
+  if (hasOwnFrontmatter(body)) return body.trim() + "\n";
+  return frontmatter(fields) + (body || "").trim() + "\n";
+}
+
 // Each type mirrors exactly how OpenCode itself loads these from disk (see its
 // built-in "customize-opencode" skill / https://opencode.ai/config.json): a
 // name/description + markdown body, at a fixed path under .opencode/.
@@ -39,20 +54,18 @@ const TYPES = {
   skill: {
     apiPath: "skill",
     relPath: (name) => path.join(".opencode", "skills", name, "SKILL.md"),
-    render: ({ name, description, body }) => frontmatter({ name, description }) + (body || "").trim() + "\n",
+    render: ({ name, description, body }) => renderWithFrontmatter({ name, description }, body),
   },
   agent: {
     apiPath: "agent",
     relPath: (name) => path.join(".opencode", "agent", `${name}.md`),
     render: ({ description, mode, editPermission, body }) =>
-      frontmatter({ description, mode: mode || "primary", permission: { edit: editPermission || "ask" } }) +
-      (body || "").trim() +
-      "\n",
+      renderWithFrontmatter({ description, mode: mode || "primary", permission: { edit: editPermission || "ask" } }, body),
   },
   command: {
     apiPath: "command",
     relPath: (name) => path.join(".opencode", "command", `${name}.md`),
-    render: ({ description, agent, body }) => frontmatter({ description, agent }) + (body || "").trim() + "\n",
+    render: ({ description, agent, body }) => renderWithFrontmatter({ description, agent }, body),
   },
 };
 
@@ -135,19 +148,34 @@ export async function listOwnCustomizations(directory) {
   return result;
 }
 
+// Mirrors the frontend's slugifyCustomizationName (public/app.js) — kept here too since
+// this is a plain API in its own right, not just a backend for the bundled UI, and a
+// direct caller sending a human name like "plan generator" is exactly as reasonable as
+// a browser user typing one into the form. Only a name with no letters at all (nothing
+// left to salvage) still falls through to validateName's error below.
+function slugifyName(raw) {
+  return String(raw || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^[^a-z]+/, "")
+    .replace(/-+$/, "");
+}
+
 export async function addCustomization(directory, type, fields) {
   const cfg = typeConfig(type);
-  validateName(fields.name);
+  const name = slugifyName(fields.name);
+  validateName(name);
   if (!fields.description) {
     throw new HttpError(400, "description is required");
   }
 
-  const relPath = cfg.relPath(fields.name);
+  const relPath = cfg.relPath(name);
   const absPath = path.join(directory, relPath);
   await fs.mkdir(path.dirname(absPath), { recursive: true });
-  await fs.writeFile(absPath, cfg.render(fields));
+  await fs.writeFile(absPath, cfg.render({ ...fields, name }));
 
-  return { type, name: fields.name, description: fields.description, path: relPath };
+  return { type, name, description: fields.description, path: relPath };
 }
 
 export async function removeCustomization(directory, type, name) {

@@ -4,7 +4,12 @@ const state = {
   projects: [],
   selectedId: null,
   tab: "task",
-  eventSource: null,
+  // Kept per-session (not one global connection) so a session's live console keeps
+  // streaming in the background while the user is looking at a different session —
+  // switching away and back must not lose activity that happened while away.
+  eventSources: new Map(), // sessionId -> EventSource
+  consoleLines: new Map(), // sessionId -> ordered [{key, className, icon, text}] (full detail history)
+  sessionStatus: new Map(), // sessionId -> {icon, text} short status, shown in the sidebar
   taskFlows: new Map(), // sessionId -> { step, taskText, planText, resultText, resultError }
 };
 
@@ -223,15 +228,36 @@ function wireCustomizationTypeToggle(prefix) {
   update();
 }
 
+// The server requires lowercase-hyphen-digits, starting with a letter (matches
+// OpenCode's own naming rule — the name becomes a directory/file name on disk). The
+// input just hints at that; without this, a natural name like "plan generator" gets
+// staged as-is and only fails at session-creation time, with an error that doesn't say
+// which field caused it. Auto-fixing here means the common case never hits that error.
+function slugifyCustomizationName(raw) {
+  return raw
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^[^a-z]+/, "") // must start with a letter — drop any leading digits/hyphens
+    .replace(/-+$/, "");
+}
+
 function readCustomizationFields(prefix) {
   const type = document.getElementById(`${prefix}-type`).value;
-  const name = document.getElementById(`${prefix}-name`).value.trim();
+  const nameInput = document.getElementById(`${prefix}-name`);
+  const rawName = nameInput.value.trim();
+  const name = slugifyCustomizationName(rawName);
   const description = document.getElementById(`${prefix}-description`).value.trim();
   const body = document.getElementById(`${prefix}-body`).value;
-  if (!name || !description) {
-    showBanner("Name and description are required.");
+  if (!name) {
+    showBanner(rawName ? `"${rawName}" needs at least one letter to become a valid ${type} name.` : "Name is required.");
     return null;
   }
+  if (!description) {
+    showBanner("Description is required.");
+    return null;
+  }
+  nameInput.value = name; // reflect the corrected name so what's shown matches what's sent
   const fields = { type, name, description, body };
   if (type === "agent") {
     fields.mode = document.getElementById(`${prefix}-mode`).value;
@@ -432,9 +458,21 @@ async function refreshSessions() {
   try {
     state.sessions = await api("/api/sessions");
     renderSessions();
+    pruneClientState(); // drop any persisted task/console history for sessions that are now gone
   } catch (err) {
     showBanner(err.message);
   }
+}
+
+function sessionShortStatus(s) {
+  const flow = state.taskFlows.get(s.id);
+  const busy = flow?.step === "planning" || flow?.step === "implementing";
+  // Short, one-line status so switching sessions doesn't lose sight of what a
+  // still-running one is doing — the console tab has the full detail behind this.
+  const text = busy
+    ? state.sessionStatus.get(s.id)?.text || (flow.step === "planning" ? "Thinking…" : "Implementing…")
+    : null;
+  return { busy, text };
 }
 
 function renderSessions() {
@@ -444,11 +482,11 @@ function renderSessions() {
     return;
   }
   for (const s of state.sessions) {
-    const flow = state.taskFlows.get(s.id);
-    const busy = flow?.step === "planning" || flow?.step === "implementing";
+    const { busy, text } = sessionShortStatus(s);
     const item = document.createElement("div");
     item.className = "session-item" + (s.id === state.selectedId ? " active" : "");
-    item.innerHTML = `<div class="title">${busy ? '<span class="mini-spinner" title="Working…"></span>' : ""}${escapeHtml(s.title || shortId(s.id))}</div><div class="branch">${escapeHtml(s.projectName || "")} · ${escapeHtml(s.branch)}</div>`;
+    item.dataset.sessionId = s.id;
+    item.innerHTML = `<div class="title">${busy ? '<span class="mini-spinner" title="Working…"></span>' : ""}${escapeHtml(s.title || shortId(s.id))}</div><div class="branch">${escapeHtml(s.projectName || "")} · ${escapeHtml(s.branch)}</div>${text ? `<div class="session-status">${escapeHtml(text)}</div>` : ""}`;
     item.addEventListener("click", () => selectSession(s.id));
     els.sessionsList.appendChild(item);
   }
@@ -590,15 +628,19 @@ async function openNewSessionModal() {
 
 els.newSessionBtn.addEventListener("click", openNewSessionModal);
 
-function closeEventSource() {
-  if (state.eventSource) {
-    state.eventSource.close();
-    state.eventSource = null;
+// Closes one session's live console connection. Deliberately not called just because
+// the user navigated away — a busy session keeps streaming in the background so its
+// status/console stays accurate when the user switches back. Only called once that
+// session's task has actually finished (or the session itself is gone).
+function closeEventSource(sessionId) {
+  const es = state.eventSources.get(sessionId);
+  if (es) {
+    es.close();
+    state.eventSources.delete(sessionId);
   }
 }
 
 function selectSession(id) {
-  closeEventSource();
   state.selectedId = id;
   state.tab = "task";
   renderSessions();
@@ -607,7 +649,6 @@ function selectSession(id) {
 
 function renderDetail() {
   viewToken++;
-  closeEventSource();
   const session = state.sessions.find((s) => s.id === state.selectedId);
   if (!session) {
     els.detailPanel.innerHTML = '<div class="empty-state">Select or create a session to get started.</div>';
@@ -646,6 +687,9 @@ function renderDetail() {
     try {
       await api(`/api/sessions/${session.id}${force ? "?force=true" : ""}`, { method: "DELETE" });
       state.taskFlows.delete(session.id);
+      state.consoleLines.delete(session.id);
+      state.sessionStatus.delete(session.id);
+      closeEventSource(session.id);
       state.selectedId = null;
       await refreshSessions();
       renderDetail();
@@ -733,21 +777,45 @@ async function loadTab(session) {
 
 // ---------- Console (live event stream) ----------
 
-// key -> line element, per container, so a step that fires multiple updates (a tool
-// going pending -> running -> completed, or streaming text) updates one line in place
-// instead of spamming duplicates — this is what makes the log read as real steps.
+// Console detail lives in state.consoleLines (per session), independent of any DOM
+// element — a session keeps accumulating its full history in the background even while
+// the user is looking at a different session, so switching back never loses it. This
+// map holds only the currently-mounted container's line elements, for in-place updates
+// (a tool going pending -> running -> completed, or streaming text, updates one line
+// instead of spamming duplicates) — it's cleared and rebuilt each time a console mounts.
 const consoleLineElements = new Map();
+const CONSOLE_HISTORY_LIMIT = 300; // caps memory/localStorage growth on a long-running task
 
-function upsertConsoleLine(containerId, key, className, icon, text) {
-  const log = document.getElementById(containerId);
-  if (!log) return;
-  const mapKey = `${containerId}:${key}`;
-  let line = consoleLineElements.get(mapKey);
+// Tool-call/text events can tick several times a second — writing to localStorage on
+// every single one would be wasteful and janky. Debouncing collapses a burst into one
+// write shortly after it settles.
+let saveClientStateTimer = null;
+function saveClientStateDebounced() {
+  clearTimeout(saveClientStateTimer);
+  saveClientStateTimer = setTimeout(saveClientState, 400);
+}
+
+// Updates (or appends, if `key` is new) one line in a session's full history, and
+// mirrors it to the DOM only if that session's console is the one currently on screen.
+function upsertConsoleLine(sessionId, key, className, icon, text) {
+  if (!state.consoleLines.has(sessionId)) state.consoleLines.set(sessionId, []);
+  const lines = state.consoleLines.get(sessionId);
+  const existing = lines.find((l) => l.key === key);
+  if (existing) Object.assign(existing, { className, icon, text });
+  else {
+    lines.push({ key, className, icon, text });
+    if (lines.length > CONSOLE_HISTORY_LIMIT) lines.splice(0, lines.length - CONSOLE_HISTORY_LIMIT);
+  }
+  saveClientStateDebounced();
+
+  const log = document.getElementById("task-console-log") || document.getElementById("console-log");
+  if (!log || log.dataset.sessionId !== sessionId) return;
+  let line = consoleLineElements.get(key);
   if (!line) {
     line = document.createElement("div");
     line.innerHTML = '<span class="icon"></span><span class="text"></span>';
     log.appendChild(line);
-    consoleLineElements.set(mapKey, line);
+    consoleLineElements.set(key, line);
   }
   line.className = "console-line " + className;
   line.querySelector(".icon").textContent = icon;
@@ -755,11 +823,24 @@ function upsertConsoleLine(containerId, key, className, icon, text) {
   log.scrollTop = log.scrollHeight;
 }
 
-function appendConsoleLine(containerId, className, icon, text) {
-  upsertConsoleLine(containerId, `once-${Date.now()}-${Math.random()}`, className, icon, text);
+function appendConsoleLine(sessionId, className, icon, text) {
+  upsertConsoleLine(sessionId, `once-${Date.now()}-${Math.random()}`, className, icon, text);
 }
 
-function handleConsoleEvent(containerId, event) {
+// The sidebar's short status line for a busy session — kept separate from the console's
+// full detail so the main list stays scannable while the console shows everything.
+// Tool-call events can tick several times a second while implementing; patching just
+// this one row's text in place (instead of rebuilding the whole sidebar list on every
+// tick) is what keeps the list from flickering.
+function setShortStatus(sessionId, text) {
+  state.sessionStatus.set(sessionId, { text });
+  const item = els.sessionsList.querySelector(`[data-session-id="${sessionId}"]`);
+  const statusEl = item?.querySelector(".session-status");
+  if (statusEl) statusEl.textContent = text;
+  else renderSessions(); // row not mounted yet, or has no status line (busy state just changed) — full rebuild
+}
+
+function handleConsoleEvent(sessionId, event) {
   const p = event.properties || {};
   switch (event.type) {
     case "message.part.updated": {
@@ -767,31 +848,34 @@ function handleConsoleEvent(containerId, event) {
       if (part?.type === "tool") {
         const status = part.state?.status;
         const title = part.state?.title || part.tool;
-        if (status === "pending") upsertConsoleLine(containerId, part.id, "tool", "⏱️", `${part.tool} — queued…`);
-        else if (status === "running") upsertConsoleLine(containerId, part.id, "tool", "🔧", `${part.tool} — ${title}…`);
-        else if (status === "completed") upsertConsoleLine(containerId, part.id, "tool", "✅", `${part.tool} — ${title}`);
+        if (status === "pending") upsertConsoleLine(sessionId, part.id, "tool", "⏱️", `${part.tool} — queued…`);
+        else if (status === "running") {
+          upsertConsoleLine(sessionId, part.id, "tool", "🔧", `${part.tool} — ${title}…`);
+          setShortStatus(sessionId, `${part.tool}…`);
+        } else if (status === "completed") upsertConsoleLine(sessionId, part.id, "tool", "✅", `${part.tool} — ${title}`);
         else if (status === "error")
-          upsertConsoleLine(containerId, part.id, "error", "❌", `${part.tool} failed: ${part.state?.error || ""}`);
+          upsertConsoleLine(sessionId, part.id, "error", "❌", `${part.tool} failed: ${part.state?.error || ""}`);
       } else if (part?.type === "text" && part.text) {
-        upsertConsoleLine(containerId, part.id, "text", "💬", part.text);
+        upsertConsoleLine(sessionId, part.id, "text", "💬", part.text);
       }
       break;
     }
     case "file.edited":
-      appendConsoleLine(containerId, "file", "✏️", `edited ${p.file}`);
+      appendConsoleLine(sessionId, "file", "✏️", `edited ${p.file}`);
       break;
     case "session.status":
-      appendConsoleLine(containerId, "status", p.status?.type === "busy" ? "⏳" : "💤", `session ${p.status?.type}`);
+      appendConsoleLine(sessionId, "status", p.status?.type === "busy" ? "⏳" : "💤", `session ${p.status?.type}`);
+      if (p.status?.type === "retry") setShortStatus(sessionId, `Retrying (${p.status.attempt})…`);
       break;
     case "session.idle":
-      appendConsoleLine(containerId, "status", "✔️", "session idle");
+      appendConsoleLine(sessionId, "status", "✔️", "session idle");
       break;
     case "session.error":
-      appendConsoleLine(containerId, "error", "❌", p.error?.data?.message || p.error?.name || "session error");
+      appendConsoleLine(sessionId, "error", "❌", p.error?.data?.message || p.error?.name || "session error");
       break;
     case "session.diff": {
       const files = (p.diff || []).length;
-      if (files > 0) appendConsoleLine(containerId, "file", "📝", `${files} file(s) changed`);
+      if (files > 0) appendConsoleLine(sessionId, "file", "📝", `${files} file(s) changed`);
       break;
     }
     default:
@@ -799,26 +883,42 @@ function handleConsoleEvent(containerId, event) {
   }
 }
 
+// Mounts a session's console into containerId, replayed from its full history (so
+// switching sessions and back shows everything that happened while away), and opens a
+// live connection only if one isn't already streaming for it in the background.
 function openConsole(sessionId, containerId) {
-  // The container div is freshly re-created each time this is called (a new task run,
-  // or switching back to the tab), so drop any stale line references from before.
-  for (const key of [...consoleLineElements.keys()]) {
-    if (key.startsWith(`${containerId}:`)) consoleLineElements.delete(key);
+  const log = document.getElementById(containerId);
+  if (log) {
+    log.dataset.sessionId = sessionId;
+    log.innerHTML = "";
+    consoleLineElements.clear();
+    for (const line of state.consoleLines.get(sessionId) || []) {
+      const el = document.createElement("div");
+      el.innerHTML = '<span class="icon"></span><span class="text"></span>';
+      el.className = "console-line " + line.className;
+      el.querySelector(".icon").textContent = line.icon;
+      el.querySelector(".text").textContent = line.text;
+      log.appendChild(el);
+      consoleLineElements.set(line.key, el);
+    }
+    log.scrollTop = log.scrollHeight;
   }
+
+  if (state.eventSources.has(sessionId)) return; // already streaming in the background
 
   const url = `/api/sessions/${sessionId}/events?token=${encodeURIComponent(state.token)}`;
   const es = new EventSource(url);
-  state.eventSource = es;
+  state.eventSources.set(sessionId, es);
 
   es.onmessage = (msg) => {
     try {
-      handleConsoleEvent(containerId, JSON.parse(msg.data));
+      handleConsoleEvent(sessionId, JSON.parse(msg.data));
     } catch {
       // ignore malformed/comment frames
     }
   };
   es.onerror = () => {
-    appendConsoleLine(containerId, "error", "⚠️", "Connection lost, retrying…");
+    appendConsoleLine(sessionId, "error", "⚠️", "Connection lost, retrying…");
   };
 }
 
@@ -929,6 +1029,29 @@ function renderMarkdownLite(text) {
   return html || "<p><em>(empty)</em></p>";
 }
 
+// Shown instead of the plain spinner once polling has given up waiting (see
+// REPLY_POLL_MAX_ATTEMPTS) but the task itself was never confirmed to have errored — it
+// may well still be working. Deliberately not the "done" screen: there's no confirmed
+// result yet, so offering "Create PR" or "View diff" here would imply a finished state
+// we don't actually know is true. Retry just resumes polling the same message.
+function renderTimedOutCard(session, flow, label, hint) {
+  const container = document.getElementById("tab-content");
+  const body = document.getElementById("task-step-body") || container;
+  body.innerHTML = `
+    <div class="task-card task-loading">
+      <p>⏱️ Still running — ${escapeHtml(label.toLowerCase())} is taking longer than expected.</p>
+      ${hint ? `<p class="hint">${hint}</p>` : ""}
+      <p class="hint">It may well still be working — the console below shows live activity if so.</p>
+      <div id="task-console-log" class="console-log"></div>
+      <div class="task-actions">
+        <button id="retry-poll-btn" class="primary">↻ Retry</button>
+      </div>
+    </div>
+  `;
+  openConsole(session.id, "task-console-log");
+  document.getElementById("retry-poll-btn").addEventListener("click", () => resumeFlow(session, flow));
+}
+
 function renderTaskTab(session) {
   const container = document.getElementById("tab-content");
   const flow = getTaskFlow(session.id);
@@ -960,13 +1083,19 @@ function renderTaskTab(session) {
   }
 
   if (flow.step === "planning") {
+    if (flow.timedOut) {
+      renderTimedOutCard(session, flow, "Thinking through a plan…", `“${escapeHtml(flow.taskText)}”`);
+      return;
+    }
     body.innerHTML = `
       <div class="task-card task-loading">
         <div class="spinner"></div>
         <p>Thinking through a plan…</p>
         <p class="hint">“${escapeHtml(flow.taskText)}”</p>
+        <div id="task-console-log" class="console-log"></div>
       </div>
     `;
+    openConsole(session.id, "task-console-log");
     return;
   }
 
@@ -990,6 +1119,10 @@ function renderTaskTab(session) {
   }
 
   if (flow.step === "implementing") {
+    if (flow.timedOut) {
+      renderTimedOutCard(session, flow, "Implementing the plan…");
+      return;
+    }
     body.innerHTML = `
       <div class="task-card implementing-card">
         <div class="implementing-header">
@@ -1004,12 +1137,18 @@ function renderTaskTab(session) {
   }
 
   if (flow.step === "done") {
+    const prControl = flow.prUrl
+      ? `<a href="${escapeHtml(flow.prUrl)}" target="_blank" rel="noopener" class="pr-link">↗ View PR #${flow.prNumber}</a>`
+      : `<button id="create-pr-btn" ${flow.prCreating ? "disabled" : ""}>${flow.prCreating ? "Creating PR…" : "Create PR"}</button>`;
+
     body.innerHTML = `
       <div class="task-card">
         <h3>${flow.resultError ? "⚠️ Finished with an error" : "✅ Done"}</h3>
         <div class="plan-content">${renderMarkdownLite(flow.resultError || flow.resultText)}</div>
+        ${flow.prError ? `<div class="pr-error">${escapeHtml(flow.prError)}</div>` : ""}
         <div class="task-actions">
           <button id="view-diff-btn">View diff</button>
+          ${prControl}
           <button id="new-task-btn" class="primary">Start another task</button>
         </div>
       </div>
@@ -1018,8 +1157,13 @@ function renderTaskTab(session) {
       state.tab = "diff";
       renderDetail();
     });
+    if (!flow.prUrl) {
+      document.getElementById("create-pr-btn").addEventListener("click", () => createPr(session, flow));
+    }
     document.getElementById("new-task-btn").addEventListener("click", () => {
       state.taskFlows.set(session.id, { step: "input", taskText: "", planText: "", resultText: "", resultError: null });
+      state.consoleLines.delete(session.id);
+      saveClientState();
       renderTaskTab(session);
     });
   }
@@ -1029,32 +1173,155 @@ function sessionLabel(session) {
   return session.title || shortId(session.id);
 }
 
+const REPLY_POLL_INTERVAL_MS = 1500;
+const REPLY_POLL_MAX_ATTEMPTS = 800; // ~20 minutes — a real "implement" turn (scaffold, install, write, lint, build) has been observed taking 14+ minutes of genuine, uninterrupted progress; this is a soft cap (see "timeout" status below), not a hard failure
+const CLIENT_STATE_KEY = "taskState";
+
+// taskFlows + consoleLines are what a reload would otherwise wipe out from memory —
+// persisting them (and flow.pendingMessageId, see below) is what lets resumePendingTasks
+// pick a still-running task back up instead of just showing a frozen, stale spinner.
+function saveClientState() {
+  try {
+    localStorage.setItem(
+      CLIENT_STATE_KEY,
+      JSON.stringify({
+        taskFlows: [...state.taskFlows.entries()],
+        consoleLines: [...state.consoleLines.entries()],
+      }),
+    );
+  } catch {
+    // storage full or unavailable (private browsing, etc.) — the task still runs, it
+    // just won't survive a reload this time.
+  }
+}
+
+function loadClientState() {
+  try {
+    const raw = localStorage.getItem(CLIENT_STATE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    for (const [id, flow] of parsed.taskFlows || []) state.taskFlows.set(id, flow);
+    for (const [id, lines] of parsed.consoleLines || []) state.consoleLines.set(id, lines);
+  } catch {
+    // corrupt/old-shape data — ignore and start fresh rather than fail to load the app.
+  }
+}
+
+// Drops persisted state for sessions that no longer exist server-side, so localStorage
+// doesn't grow forever as sessions get created and deleted over time.
+function pruneClientState() {
+  const liveIds = new Set(state.sessions.map((s) => s.id));
+  for (const id of [...state.taskFlows.keys()]) if (!liveIds.has(id)) state.taskFlows.delete(id);
+  for (const id of [...state.consoleLines.keys()]) if (!liveIds.has(id)) state.consoleLines.delete(id);
+  saveClientState();
+}
+
+// Polls for one message's reply — the piece shared by sending a fresh message and by
+// resuming a poll left mid-flight by a reload (which only has the messageId to go on).
+//
+// "timeout" is deliberately its own status, distinct from "error": we've seen a real
+// implement turn still making genuine, uninterrupted progress well past this cap (see
+// REPLY_POLL_MAX_ATTEMPTS) — treating that as a failure discards a task that was
+// actually succeeding. The caller keeps pendingMessageId around so a "Retry" can just
+// resume polling the same message rather than losing the work and starting over.
+async function pollReply(sessionId, messageId) {
+  for (let attempt = 0; attempt < REPLY_POLL_MAX_ATTEMPTS; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, REPLY_POLL_INTERVAL_MS));
+    const result = await api(`/api/sessions/${sessionId}/messages/${messageId}/reply`);
+    if (result.status === "done" || result.status === "error") return result;
+  }
+  return { status: "timeout" };
+}
+
+// POST /messages returns as soon as OpenCode accepts the message — the actual turn
+// (tool calls, retries, sometimes minutes of work) happens in the background. This
+// polls the server for the assistant's reply instead of holding one HTTP request open
+// for however long that takes. onStart fires with the messageId as soon as it's known,
+// so the caller can persist it before the (potentially long) poll even begins.
+async function sendMessageAndAwaitReply(sessionId, body, onStart) {
+  const { messageId } = await api(`/api/sessions/${sessionId}/messages`, { method: "POST", body });
+  if (onStart) onStart(messageId);
+  return pollReply(sessionId, messageId);
+}
+
+function finishPlanning(session, flow, result, stillCurrent) {
+  // Still might be working — leave pendingMessageId and the console connection alone so
+  // "Retry" (or the next reload) can just keep polling the same message, not restart it.
+  if (result.status === "timeout") {
+    flow.timedOut = true;
+    saveClientState();
+    return;
+  }
+  flow.timedOut = false;
+  closeEventSource(session.id);
+  state.sessionStatus.delete(session.id);
+  flow.pendingMessageId = null;
+  if (result.status === "error") {
+    const message = result.error?.data?.message || result.error?.name || "Planning failed";
+    showBanner(stillCurrent() ? message : `“${sessionLabel(session)}”: ${message}`);
+    flow.step = "input";
+  } else {
+    flow.planText = result.reply || "(no plan text returned)";
+    flow.step = "plan";
+    if (!stillCurrent()) showBanner(`Plan ready for “${sessionLabel(session)}” — switch to it to review.`);
+  }
+  saveClientState();
+}
+
+function finishImplementing(session, flow, result, stillCurrent) {
+  if (result.status === "timeout") {
+    flow.timedOut = true;
+    saveClientState();
+    return;
+  }
+  flow.timedOut = false;
+  closeEventSource(session.id);
+  state.sessionStatus.delete(session.id);
+  flow.pendingMessageId = null;
+  if (result.status === "error") {
+    flow.resultError = result.error?.data?.message || result.error?.name || "Implementation failed";
+    flow.resultText = "";
+  } else {
+    flow.resultText = result.reply || "(no reply text)";
+    flow.resultError = null;
+  }
+  flow.step = "done";
+  if (!stillCurrent()) {
+    showBanner(
+      flow.resultError
+        ? `“${sessionLabel(session)}” finished with an error — switch to it to see what happened.`
+        : `“${sessionLabel(session)}” finished implementing — switch to it to see the result.`,
+    );
+  }
+  saveClientState();
+}
+
 async function generatePlan(session, flow) {
   const token = viewToken;
   const stillCurrent = () => isCurrentView(session.id, "task", token);
 
   flow.step = "planning";
+  state.consoleLines.delete(session.id); // fresh detail log for this task attempt
+  state.sessionStatus.delete(session.id);
   if (stillCurrent()) renderTaskTab(session);
   renderSessions(); // shows the busy indicator next to this session in the sidebar
   try {
     // Always plan with OpenCode's built-in read-only "plan" agent, regardless of the
     // session's own default agent, so proposing a plan never edits files.
-    const result = await api(`/api/sessions/${session.id}/messages`, {
-      method: "POST",
-      body: { text: flow.taskText, agent: "plan" },
+    const result = await sendMessageAndAwaitReply(session.id, { text: flow.taskText, agent: "plan" }, (messageId) => {
+      flow.pendingMessageId = messageId;
+      saveClientState();
     });
-    if (result.message?.error) {
-      const message = result.message.error.data?.message || result.message.error.name || "Planning failed";
-      showBanner(stillCurrent() ? message : `“${sessionLabel(session)}”: ${message}`);
-      flow.step = "input";
-    } else {
-      flow.planText = result.reply || "(no plan text returned)";
-      flow.step = "plan";
-      if (!stillCurrent()) showBanner(`Plan ready for “${sessionLabel(session)}” — switch to it to review.`);
-    }
+    // Not gated on stillCurrent() — this session may still be streaming in the
+    // background for another view (or none), and its task just finished either way.
+    finishPlanning(session, flow, result, stillCurrent);
   } catch (err) {
+    closeEventSource(session.id);
+    state.sessionStatus.delete(session.id);
+    flow.pendingMessageId = null;
     showBanner(stillCurrent() ? err.message : `“${sessionLabel(session)}”: ${err.message}`);
     flow.step = "input";
+    saveClientState();
   }
   // Still applies even if the user navigated away: next time they open this session's
   // Task tab, renderTaskTab reads flow.step fresh and shows the right screen. Only the
@@ -1075,39 +1342,88 @@ async function implementPlan(session, flow) {
   // "build" for the implementation step so accepting a plan can actually edit files.
   const implementAgent = session.agent && session.agent !== "plan" ? session.agent : "build";
   try {
-    const result = await api(`/api/sessions/${session.id}/messages`, {
-      method: "POST",
-      body: { text: "Proceed and implement the plan you just proposed.", agent: implementAgent },
-    });
-    // Only tear down the live event source if it's still ours — the user may have since
-    // navigated to a different session/console, which owns state.eventSource now.
-    if (stillCurrent()) closeEventSource();
-    if (result.message?.error) {
-      flow.resultError = result.message.error.data?.message || result.message.error.name || "Implementation failed";
-      flow.resultText = "";
-    } else {
-      flow.resultText = result.reply || "(no reply text)";
-      flow.resultError = null;
-    }
-    flow.step = "done";
-    if (!stillCurrent()) {
-      showBanner(
-        flow.resultError
-          ? `“${sessionLabel(session)}” finished with an error — switch to it to see what happened.`
-          : `“${sessionLabel(session)}” finished implementing — switch to it to see the result.`,
-      );
-    }
+    const result = await sendMessageAndAwaitReply(
+      session.id,
+      { text: "Proceed and implement the plan you just proposed.", agent: implementAgent },
+      (messageId) => {
+        flow.pendingMessageId = messageId;
+        saveClientState();
+      },
+    );
+    // Not gated on stillCurrent() — this session's console may still be streaming in
+    // the background for another view, and its task just finished either way.
+    finishImplementing(session, flow, result, stillCurrent);
   } catch (err) {
-    if (stillCurrent()) {
-      closeEventSource();
-      showBanner(err.message);
-    } else {
-      showBanner(`“${sessionLabel(session)}”: ${err.message}`);
-    }
+    closeEventSource(session.id);
+    state.sessionStatus.delete(session.id);
+    flow.pendingMessageId = null;
+    showBanner(stillCurrent() ? err.message : `“${sessionLabel(session)}”: ${err.message}`);
     flow.step = "plan";
+    saveClientState();
   }
   if (stillCurrent()) renderTaskTab(session);
   renderSessions();
+}
+
+// Commits whatever the agent left uncommitted, pushes the session's branch, and opens a
+// PR against the project's default branch — server-side (see POST /:id/pr), this just
+// drives the button's loading/result state.
+async function createPr(session, flow) {
+  const token = viewToken;
+  const stillCurrent = () => isCurrentView(session.id, "task", token);
+
+  flow.prCreating = true;
+  flow.prError = null;
+  if (stillCurrent()) renderTaskTab(session);
+  try {
+    const result = await api(`/api/sessions/${session.id}/pr`, {
+      method: "POST",
+      body: { title: session.title, body: flow.resultText },
+    });
+    flow.prUrl = result.url;
+    flow.prNumber = result.number;
+  } catch (err) {
+    flow.prError = err.message;
+  }
+  flow.prCreating = false;
+  saveClientState();
+  if (stillCurrent()) renderTaskTab(session);
+  else showBanner(flow.prError ? `PR failed for “${sessionLabel(session)}”: ${flow.prError}` : `PR opened for “${sessionLabel(session)}”.`);
+}
+
+// Resumes polling a flow's pendingMessageId from wherever it was left — used both by the
+// "Retry" button (after a timeout) and by resumePendingTasks (after a reload). Doesn't
+// re-send anything; the original message is still being worked on server-side, this just
+// picks the polling back up.
+async function resumeFlow(session, flow) {
+  const token = viewToken;
+  const stillCurrent = () => isCurrentView(session.id, "task", token);
+  flow.timedOut = false;
+  if (stillCurrent()) renderTaskTab(session);
+  if (state.selectedId === session.id && state.tab === "task") openConsole(session.id, "task-console-log");
+  const finish = flow.step === "planning" ? finishPlanning : finishImplementing;
+  const result = await pollReply(session.id, flow.pendingMessageId);
+  finish(session, flow, result, stillCurrent);
+  if (stillCurrent()) renderTaskTab(session);
+  renderSessions();
+}
+
+// Called once at startup, after the session list loads. A page reload wipes every
+// in-flight poll loop (they're just JS closures) — this picks each still-"planning" or
+// "implementing" flow back up from the messageId that was persisted before the reload,
+// reopening its console too, so the user doesn't come back to a permanently frozen
+// spinner over stale data.
+async function resumePendingTasks() {
+  for (const [sessionId, flow] of state.taskFlows) {
+    if (!flow.pendingMessageId) continue;
+    if (flow.step !== "planning" && flow.step !== "implementing") continue;
+    const session = state.sessions.find((s) => s.id === sessionId);
+    if (!session) {
+      state.taskFlows.delete(sessionId); // session was deleted while we were away
+      continue;
+    }
+    resumeFlow(session, flow);
+  }
 }
 
 els.tokenSave.addEventListener("click", () => {
@@ -1119,7 +1435,8 @@ els.tokenSave.addEventListener("click", () => {
 
 checkHealth();
 setInterval(checkHealth, 15000);
+loadClientState(); // restore task console/status history that a reload would otherwise drop
 if (state.token) {
   refreshProjects();
-  refreshSessions();
+  refreshSessions().then(resumePendingTasks); // pick back up any task still running server-side
 }
